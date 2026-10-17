@@ -1,6 +1,6 @@
 # kanso
 
-Multi-user todo app with a terminal UI, also served in the browser.
+Personal, local-first todo app with a terminal UI, also served in the browser.
 
 ## Requirements
 
@@ -11,12 +11,12 @@ Multi-user todo app with a terminal UI, also served in the browser.
 
 ```sh
 uv sync
-uv run kanso-server   # API server on http://localhost:8000
 uv run kanso          # terminal UI
 uv run kanso-web      # same UI in the browser on http://localhost:8080
 ```
 
-Start the server before running either UI.
+Data is stored in a local SQLite database in the user data directory
+(`~/.local/share/kanso/kanso.db` on Linux).
 
 ## Develop
 

@@ -3,19 +3,14 @@ name = "kanso"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
-    "fastapi",
-    "httpx",
     "platformdirs",
-    "pwdlib[argon2]",
     "sqlmodel",
     "textual",
     "textual-serve",
-    "uvicorn",
 ]
 
 [project.scripts]
 kanso = "kanso.tui.app:main"
-kanso-server = "kanso.server.app:main"
 kanso-web = "kanso.web:main"
 
 [dependency-groups]
@@ -24,3 +19,7 @@ dev = ["pytest"]
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["error"]
