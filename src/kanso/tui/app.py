@@ -1,7 +1,9 @@
 from uuid import UUID
 
 from textual.app import App, ComposeResult
+from textual.binding import Binding
 from textual.containers import Horizontal
+from textual.content import Content
 from textual.screen import ModalScreen
 from textual.widgets import Footer, Header, Input, OptionList
 from textual.widgets.option_list import Option
@@ -10,9 +12,10 @@ from kanso.core.models import Todo
 from kanso.core.store import Store
 
 
-def todo_label(todo: Todo) -> str:
-    label = f"{'[x]' if todo.done else '[ ]'} {todo.text}"
-    return f"{label}  ({todo.scheduled_at:%Y-%m-%d})" if todo.scheduled_at else label
+def todo_label(todo: Todo) -> Content:
+    """Scheduled date in an aligned column (blank if none), then checkbox and text, as plain text."""
+    scheduled = f"{todo.scheduled_at:%Y-%m-%d}" if todo.scheduled_at else ""
+    return Content(f"{scheduled:10}  {'[x]' if todo.done else '[ ]'} {todo.text}")
 
 
 class TextPrompt(ModalScreen[str | None]):
@@ -35,13 +38,29 @@ class TextPrompt(ModalScreen[str | None]):
         self.dismiss(event.value.strip() or None)
 
 
+class VimOptionList(OptionList):
+    BINDINGS = [
+        Binding("j", "cursor_down", show=False),
+        Binding("k", "cursor_up", show=False),
+        Binding("g", "first", show=False),
+        Binding("G", "last", show=False),
+    ]
+
+
 class KansoApp(App):
     TITLE = "kanso"
     CSS = """
     #lists { width: 30; }
     #todos { width: 1fr; }
     """
-    BINDINGS = [("a", "add_todo", "Add"), ("e", "edit_todo", "Edit")]
+    BINDINGS = [
+        ("a", "add_todo", "Add"),
+        ("e", "edit_todo", "Edit"),
+        Binding("full_stop", "shift_date(1)", "+1 day", key_display="."),
+        Binding("comma", "shift_date(-1)", "-1 day", key_display=","),
+        Binding("right,l", "focus_todos", "Todos", show=False),
+        Binding("left,h,escape", "focus_lists", "Lists", show=False),
+    ]
 
     def __init__(self, store: Store):
         super().__init__()
@@ -52,8 +71,8 @@ class KansoApp(App):
     def compose(self) -> ComposeResult:
         yield Header()
         with Horizontal():
-            yield OptionList(*(Option(l.name, str(l.id)) for l in self.store.lists()), id="lists")
-            yield OptionList(id="todos")
+            yield VimOptionList(*(Option(Content(l.name), str(l.id)) for l in self.store.lists()), id="lists")
+            yield VimOptionList(id="todos")
         yield Footer()
 
     def on_mount(self):
@@ -79,8 +98,19 @@ class KansoApp(App):
             self.show_todos()
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected):
-        if event.option_list.id == "todos":
+        if event.option_list.id == "lists":
+            self.action_focus_todos()
+        else:
             self.action_edit_todo()
+
+    def action_focus_todos(self):
+        todos = self.query_one("#todos", OptionList)
+        if todos.highlighted is None and todos.option_count:
+            todos.highlighted = 0
+        todos.focus()
+
+    def action_focus_lists(self):
+        self.query_one("#lists").focus()
 
     def action_add_todo(self):
         """Add below the highlighted todo, or at the end if none is."""
@@ -106,6 +136,10 @@ class KansoApp(App):
                 self.show_todos(self.store.update_todo(todo.id, text=text))
 
         self.push_screen(TextPrompt(todo.text), edit)
+
+    def action_shift_date(self, days: int):
+        if todo := self.highlighted_todo():
+            self.show_todos(self.store.shift_todo(todo.id, days))
 
 
 def main():

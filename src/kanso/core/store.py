@@ -1,12 +1,14 @@
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from uuid import UUID, uuid4
 
 from platformdirs import user_data_path
-from sqlmodel import Session, SQLModel, create_engine, func, select
+from sqlalchemy import Engine, event
+from sqlmodel import Session, create_engine, func, select
 
 from kanso.core import position
 from kanso.core.clock import Clock
+from kanso.core.migrations import migrate
 from kanso.core.models import Meta, Record, Todo, TodoList
 
 NAME_MAX = 200
@@ -19,6 +21,33 @@ class NotFound(LookupError):
 
 def default_path() -> Path:
     return user_data_path("kanso", ensure_exists=True) / "kanso.db"
+
+
+def connect(path: Path) -> Engine:
+    """SQLite engine whose transactions also cover DDL, so migrations are atomic.
+
+    pysqlite otherwise commits before DDL statements; this is SQLAlchemy's documented fix.
+    """
+    engine = create_engine(f"sqlite:///{path}")
+
+    @event.listens_for(engine, "connect")
+    def disable_pysqlite_transactions(dbapi_connection, _):
+        dbapi_connection.isolation_level = None
+
+    @event.listens_for(engine, "begin")
+    def begin(conn):
+        conn.exec_driver_sql("BEGIN")
+
+    return engine
+
+
+def apply_changes(todo: Todo, changes: dict) -> Todo:
+    if unknown := changes.keys() - TODO_FIELDS:
+        raise TypeError(f"Cannot set {', '.join(sorted(unknown))}")
+    if "done" in changes and changes["done"] != todo.done:
+        todo.completed_at = date.today() if changes["done"] else None
+    todo.sqlmodel_update(changes)
+    return todo
 
 
 def clean_name(name: str) -> str:
@@ -40,8 +69,8 @@ class Store:
     """The local database and every operation on it. UIs talk only to this."""
 
     def __init__(self, path: Path | None = None):
-        self.engine = create_engine(f"sqlite:///{path or default_path()}")
-        SQLModel.metadata.create_all(self.engine)
+        self.engine = connect(path or default_path())
+        migrate(self.engine)
         self.db = Session(self.engine, expire_on_commit=False)
         stamps = [self.db.exec(select(func.max(m.modified_at))).one() for m in (TodoList, Todo)]
         self.clock = Clock(self._node_id(), max(filter(None, stamps), default=None))
@@ -99,19 +128,23 @@ class Store:
         self._get(TodoList, list_id)
         return self._live(Todo, Todo.list_id == list_id)
 
-    def add_todo(self, list_id: UUID, text: str = "", index: int | None = None, scheduled_at: date | None = None) -> Todo:
-        """Insert at `index` in the list's order; `None` appends."""
+    def add_todo(self, list_id: UUID, text: str = "", index: int | None = None, **fields) -> Todo:
+        """Insert at `index` in the list's order (`None` appends); `fields` as in `update_todo`.
+
+        New todos are scheduled for today unless `scheduled_at` says otherwise.
+        """
         pos = position_at(self.todos(list_id), index)
-        return self._save(Todo(list_id=list_id, text=text, scheduled_at=scheduled_at, position=pos))
+        todo = Todo(list_id=list_id, text=text, position=pos, scheduled_at=date.today())
+        return self._save(apply_changes(todo, fields))
 
     def update_todo(self, todo_id: UUID, **changes) -> Todo:
         """Set any of `text`, `done`, `scheduled_at`; toggling `done` sets `completed_at`."""
-        if unknown := changes.keys() - TODO_FIELDS:
-            raise TypeError(f"Cannot update {', '.join(sorted(unknown))}")
+        return self._save(apply_changes(self._get(Todo, todo_id), changes))
+
+    def shift_todo(self, todo_id: UUID, days: int) -> Todo:
+        """Move the scheduled date by `days`; an unscheduled todo counts as scheduled today."""
         todo = self._get(Todo, todo_id)
-        if "done" in changes and changes["done"] != todo.done:
-            todo.completed_at = date.today() if changes["done"] else None
-        todo.sqlmodel_update(changes)
+        todo.scheduled_at = (todo.scheduled_at or date.today()) + timedelta(days=days)
         return self._save(todo)
 
     def move_todo(self, todo_id: UUID, index: int) -> Todo:

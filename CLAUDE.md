@@ -5,6 +5,7 @@ Personal, single-user, local-first todo app, rewritten from scratch in `src/kans
 - `core/`: no UI dependencies; the part future frontends (web, mobile) build on.
   - `store.py`: `Store`, the database and every operation on it. UIs call only this.
   - `models.py`: SQLModel tables, kept sync-ready: UUID ids, tombstone deletes (`deleted`), `modified_at` hybrid-logical-clock stamps (`clock.py`) for last-writer-wins, and fractional-index string positions (`position.py`). Preserve these properties in every change.
+  - `migrations.py`: every change to the table models needs a migration appended to `MIGRATIONS`, written as a per-row data transform (it also upgrades rows synced from older replicas). Never edit a released migration.
 - `tui/`: Textual app, the only UI.
 - `web.py`: serves the same Textual app in the browser via textual-serve. No separate web frontend.
 

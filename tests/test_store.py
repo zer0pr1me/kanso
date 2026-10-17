@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 from uuid import uuid4
 
 import pytest
@@ -125,7 +125,27 @@ def test_missing_or_deleted_list_not_found(store, todo_list, op):
 
 def test_add_todo_defaults(store, todo_list):
     todo = store.add_todo(todo_list.id)
-    assert (todo.text, todo.done, todo.created_at, todo.scheduled_at, todo.completed_at) == ("", False, date.today(), None, None)
+    today = date.today()
+    assert (todo.text, todo.done, todo.created_at, todo.scheduled_at, todo.completed_at) == ("", False, today, today, None)
+
+
+def test_add_todo_with_fields(store, todo_list):
+    todo = store.add_todo(todo_list.id, "a", done=True, scheduled_at=None)
+    assert (todo.done, todo.completed_at, todo.scheduled_at) == (True, date.today(), None)
+
+
+def test_add_todo_with_fields_stamps_once(store, todo_list, monkeypatch):
+    stamps = []
+    now = store.clock.now
+    monkeypatch.setattr(store.clock, "now", lambda: stamps.append(now()) or stamps[-1])
+    todo = store.add_todo(todo_list.id, "a", done=True)
+    assert stamps == [todo.modified_at]
+
+
+def test_add_todo_rejects_other_fields(store, todo_list):
+    with pytest.raises(TypeError):
+        store.add_todo(todo_list.id, "a", deleted=True)
+    assert store.todos(todo_list.id) == []
 
 
 def test_add_todo_appends_or_inserts_at_index(store, todo_list):
@@ -212,3 +232,22 @@ def test_todos_of_deleted_list_not_found(store, todo_list):
     store.delete_list(todo_list.id)
     with pytest.raises(NotFound):
         store.update_todo(todo.id, text="x")
+
+
+@pytest.mark.parametrize("days", [1, -1, 7, 0])
+def test_shift_todo(store, todo_list, days):
+    todo = store.add_todo(todo_list.id, "a", scheduled_at=date(2026, 1, 31))
+    assert store.shift_todo(todo.id, days).scheduled_at == date(2026, 1, 31) + timedelta(days=days)
+
+
+def test_shift_unscheduled_todo_counts_from_today(store, todo_list):
+    todo = store.add_todo(todo_list.id, "a", scheduled_at=None)
+    assert store.shift_todo(todo.id, 1).scheduled_at == date.today() + timedelta(days=1)
+
+
+def test_shift_missing_or_deleted_todo_not_found(store, todo_list):
+    todo = store.add_todo(todo_list.id, "a")
+    store.delete_todo(todo.id)
+    for id in (todo.id, uuid4()):
+        with pytest.raises(NotFound):
+            store.shift_todo(id, 1)
