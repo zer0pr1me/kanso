@@ -1,0 +1,3 @@
+#!/bin/sh
+# Block the commit if tests fail.
+exec uv run pytest -q

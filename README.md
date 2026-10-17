@@ -22,4 +22,5 @@ Data is stored in a local SQLite database in the user data directory
 
 ```sh
 uv run pytest
+scripts/install-hooks.sh   # once per clone: run the tests before every commit
 ```
