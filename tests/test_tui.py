@@ -127,7 +127,7 @@ def test_add_appends_when_nothing_highlighted(store, inbox):
 
 def test_add_inserts_below_highlighted(store, inbox):
     async def check(app, pilot):
-        app.query_one("#todos", OptionList).highlighted = 0
+        await pilot.press("l")
         await pilot.press("a")
         await type_in_prompt(pilot, "new")
         assert highlighted(app) == label("new")
@@ -182,7 +182,7 @@ def test_edit_highlighted_todo(store, inbox, key):
 @pytest.mark.parametrize("keys", [["escape"], ["ctrl+u", "enter"]])
 def test_edit_cancelled_or_blank_keeps_text(store, inbox, keys):
     async def check(app, pilot):
-        app.query_one("#todos", OptionList).highlighted = 0
+        await pilot.press("l")
         await pilot.press("e", *keys)
         assert app.screen is app.screen_stack[0]
 
@@ -201,7 +201,7 @@ def test_edit_without_highlighted_todo_does_nothing(store, inbox):
 @pytest.mark.parametrize("key, days", [("full_stop", 1), ("comma", -1)])
 def test_shift_date_of_highlighted_todo(store, inbox, key, days):
     async def check(app, pilot):
-        app.query_one("#todos", OptionList).highlighted = 1
+        await pilot.press("l", "j")
         await pilot.press(key, key)
         shifted = f"{date.today() + timedelta(days=2 * days):%Y-%m-%d}  [ ] b"
         assert prompts(app, "todos") == [label("a"), shifted]
@@ -310,3 +310,85 @@ def test_vim_and_date_keys_type_into_prompt(store, inbox):
 
     run(KansoApp(store), check)
     assert [t.text for t in store.todos(inbox.id)] == ["a", "b", "hjklgG.,"]
+
+
+def test_space_toggles_highlighted_todo(store, inbox):
+    async def check(app, pilot):
+        await pilot.press("l", "j", "space")
+        assert highlighted(app) == label("b").replace("[ ]", "[x]")
+        assert prompts(app, "todos")[0] == label("a")
+        await pilot.press("space")
+        assert highlighted(app) == label("b")
+
+    run(KansoApp(store), check)
+    assert [(t.done, t.completed_at) for t in store.todos(inbox.id)] == [(False, None), (False, None)]
+
+
+def test_toggle_marks_done_in_store(store, inbox):
+    async def check(app, pilot):
+        await pilot.press("l", "space")
+
+    run(KansoApp(store), check)
+    assert [(t.done, t.completed_at) for t in store.todos(inbox.id)] == [(True, date.today()), (False, None)]
+
+
+@pytest.mark.parametrize("start, remaining, next_highlight", [(0, "bc", "b"), (1, "ac", "c"), (2, "ab", "b")])
+def test_delete_highlights_next_or_previous(store, inbox, start, remaining, next_highlight):
+    store.add_todo(inbox.id, "c")
+
+    async def check(app, pilot):
+        await pilot.press("l", *["j"] * start, "d")
+        assert prompts(app, "todos") == [label(t) for t in remaining]
+        assert highlighted(app) == label(next_highlight)
+
+    run(KansoApp(store), check)
+    assert "".join(t.text for t in store.todos(inbox.id)) == remaining
+
+
+def test_delete_last_remaining_todo(store):
+    todo_list = store.add_list("Inbox")
+    store.add_todo(todo_list.id, "a")
+
+    async def check(app, pilot):
+        await pilot.press("l", "d")
+        assert prompts(app, "todos") == []
+        assert app.query_one("#todos", OptionList).highlighted is None
+
+    run(KansoApp(store), check)
+    assert store.todos(todo_list.id) == []
+
+
+@pytest.mark.parametrize("key", ["space", "d", "e", "full_stop", "comma"])
+def test_todo_actions_ignored_while_lists_focused(store, inbox, key):
+    async def check(app, pilot):
+        await pilot.press("l", "h", key)
+        assert app.screen is app.screen_stack[0]
+        assert prompts(app, "todos") == [label("a"), label("b")]
+
+    run(KansoApp(store), check)
+    assert [(t.text, t.done) for t in store.todos(inbox.id)] == [("a", False), ("b", False)]
+
+
+def test_add_from_lists_pane_appends(store, inbox):
+    async def check(app, pilot):
+        await pilot.press("l", "h", "a", "c", "enter")
+
+    run(KansoApp(store), check)
+    assert texts(store, inbox) == ["a", "b", "c"]
+
+
+def test_toggle_and_delete_without_highlighted_todo_do_nothing(store, inbox):
+    async def check(app, pilot):
+        await pilot.press("space", "d")
+        assert prompts(app, "todos") == [label("a"), label("b")]
+
+    run(KansoApp(store), check)
+    assert [(t.text, t.done) for t in store.todos(inbox.id)] == [("a", False), ("b", False)]
+
+
+def test_space_and_d_type_into_prompt(store, inbox):
+    async def check(app, pilot):
+        await pilot.press("a", "d", "space", "d", "enter")
+
+    run(KansoApp(store), check)
+    assert [t.text for t in store.todos(inbox.id)] == ["a", "b", "d d"]

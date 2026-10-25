@@ -56,6 +56,8 @@ class KansoApp(App):
     BINDINGS = [
         ("a", "add_todo", "Add"),
         ("e", "edit_todo", "Edit"),
+        Binding("space", "toggle_todo", "Done"),
+        ("d", "delete_todo", "Delete"),
         Binding("full_stop", "shift_date(1)", "+1 day", key_display="."),
         Binding("comma", "shift_date(-1)", "-1 day", key_display=","),
         Binding("right,l", "focus_todos", "Todos", show=False),
@@ -89,8 +91,9 @@ class KansoApp(App):
             widget.highlighted = next(i for i, t in enumerate(self.todos) if t.id == highlight.id)
 
     def highlighted_todo(self) -> Todo | None:
-        index = self.query_one("#todos", OptionList).highlighted
-        return None if index is None else self.todos[index]
+        """The todo actions apply to: only while the todos pane is focused."""
+        widget = self.query_one("#todos", OptionList)
+        return None if widget.highlighted is None or not widget.has_focus else self.todos[widget.highlighted]
 
     def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted):
         if event.option_list.id == "lists":
@@ -136,6 +139,19 @@ class KansoApp(App):
                 self.show_todos(self.store.update_todo(todo.id, text=text))
 
         self.push_screen(TextPrompt(todo.text), edit)
+
+    def action_toggle_todo(self):
+        if todo := self.highlighted_todo():
+            self.show_todos(self.store.update_todo(todo.id, done=not todo.done))
+
+    def action_delete_todo(self):
+        """Delete, then highlight the next todo, or the previous one if it was last."""
+        if not (todo := self.highlighted_todo()):
+            return
+        index = self.todos.index(todo)
+        rest = [t for t in self.todos if t is not todo]
+        self.store.delete_todo(todo.id)
+        self.show_todos(rest[min(index, len(rest) - 1)] if rest else None)
 
     def action_shift_date(self, days: int):
         if todo := self.highlighted_todo():
