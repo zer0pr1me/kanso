@@ -1,3 +1,4 @@
+import os
 from datetime import date, timedelta
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -20,7 +21,11 @@ class NotFound(LookupError):
 
 
 def default_path() -> Path:
-    return user_data_path("kanso", ensure_exists=True) / "kanso.db"
+    """`kanso.db` in `$KANSO_DATA_DIR` if set, else in the user data directory; creates the directory."""
+    env = os.environ.get("KANSO_DATA_DIR")
+    data_dir = Path(env).expanduser() if env else user_data_path("kanso")
+    data_dir.mkdir(parents=True, exist_ok=True)
+    return data_dir / "kanso.db"
 
 
 def connect(path: Path) -> Engine:
@@ -70,7 +75,11 @@ class Store:
 
     def __init__(self, path: Path | None = None):
         self.engine = connect(path or default_path())
-        migrate(self.engine)
+        try:
+            migrate(self.engine)
+        except BaseException:
+            self.engine.dispose()
+            raise
         self.db = Session(self.engine, expire_on_commit=False)
         stamps = [self.db.exec(select(func.max(m.modified_at))).one() for m in (TodoList, Todo)]
         self.clock = Clock(self._node_id(), max(filter(None, stamps), default=None))

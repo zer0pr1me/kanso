@@ -33,9 +33,35 @@ def texts(store, list_id):
 # Setup
 
 
-def test_default_path_is_user_data_dir(tmp_path, monkeypatch):
-    monkeypatch.setattr(store_module, "user_data_path", lambda app, ensure_exists: tmp_path / app)
+@pytest.mark.parametrize("env", [None, ""])
+def test_default_path_is_user_data_dir(tmp_path, monkeypatch, env):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    if env is None:
+        monkeypatch.delenv("KANSO_DATA_DIR", raising=False)
+    else:
+        monkeypatch.setenv("KANSO_DATA_DIR", env)
     assert store_module.default_path() == tmp_path / "kanso" / "kanso.db"
+    assert (tmp_path / "kanso").is_dir()
+
+
+def test_default_path_from_env_creates_dir(tmp_path, monkeypatch):
+    monkeypatch.setenv("KANSO_DATA_DIR", str(tmp_path / "a" / "b"))
+    assert store_module.default_path() == tmp_path / "a" / "b" / "kanso.db"
+    assert (tmp_path / "a" / "b").is_dir()
+
+
+def test_default_path_from_env_expands_home(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("KANSO_DATA_DIR", "~/kanso")
+    assert store_module.default_path() == tmp_path / "kanso" / "kanso.db"
+
+
+def test_store_opens_database_in_env_dir(tmp_path, monkeypatch):
+    monkeypatch.setenv("KANSO_DATA_DIR", str(tmp_path / "data"))
+    store = Store()
+    store.add_list("Inbox")
+    store.close()
+    assert (tmp_path / "data" / "kanso.db").is_file()
 
 
 def test_data_persists_and_node_id_is_stable(path):

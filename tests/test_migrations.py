@@ -4,6 +4,7 @@ from contextlib import closing
 import pytest
 
 from kanso.core import migrations
+from kanso.core import store as store_module
 from kanso.core.migrations import current_version, upgrade
 from kanso.core.store import Store
 
@@ -97,6 +98,17 @@ def test_newer_database_is_refused_untouched(path, monkeypatch):
     with pytest.raises(ValueError, match="newer"):
         Store(path)
     assert stored_version(path) == "5"
+
+
+def test_refused_database_closes_its_connections(path, monkeypatch):
+    open_store(path)
+    sql(path, "UPDATE meta SET value = '5' WHERE key = 'schema_version'")
+    engines = []
+    connect = store_module.connect
+    monkeypatch.setattr(store_module, "connect", lambda p: engines.append(connect(p)) or engines[0])
+    with pytest.raises(ValueError, match="newer"):
+        Store(path)
+    assert engines[0].pool.checkedin() == 0
 
 
 def failing(rows):
