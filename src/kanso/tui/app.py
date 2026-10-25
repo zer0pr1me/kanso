@@ -1,3 +1,4 @@
+from datetime import date
 from uuid import UUID
 
 from textual.app import App, ComposeResult
@@ -12,10 +13,28 @@ from kanso.core.models import Todo
 from kanso.core.store import Store
 
 
+def human_date(day: date, today: date | None = None) -> str:
+    """Today/Tomorrow/Yesterday; a weekday within this week (Monday to Sunday), prefixed
+    Next/Last in the adjacent weeks; else month and day, plus the year if not this one."""
+    today = today or date.today()
+    match (day - today).days:
+        case 0:
+            return "Today"
+        case 1:
+            return "Tomorrow"
+        case -1:
+            return "Yesterday"
+    weeks = (day.toordinal() - day.weekday() - today.toordinal() + today.weekday()) // 7
+    prefix = {-1: "Last ", 0: "", 1: "Next "}.get(weeks)
+    if prefix is not None:
+        return f"{prefix}{day:%A}"
+    return f"{day:%b} {day.day}" + ("" if day.year == today.year else f", {day.year}")
+
+
 def todo_label(todo: Todo) -> Content:
     """Scheduled date in an aligned column (blank if none), then checkbox and text, as plain text."""
-    scheduled = f"{todo.scheduled_at:%Y-%m-%d}" if todo.scheduled_at else ""
-    return Content(f"{scheduled:10}  {'[x]' if todo.done else '[ ]'} {todo.text}")
+    scheduled = human_date(todo.scheduled_at) if todo.scheduled_at else ""
+    return Content(f"{scheduled:14}  {'[x]' if todo.done else '[ ]'} {todo.text}")
 
 
 class TextPrompt(ModalScreen[str | None]):

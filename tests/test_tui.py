@@ -5,7 +5,7 @@ import pytest
 from textual.widgets import OptionList
 
 from kanso.core.store import Store
-from kanso.tui.app import KansoApp, todo_label
+from kanso.tui.app import KansoApp, human_date, todo_label
 
 
 @pytest.fixture
@@ -17,7 +17,7 @@ def store(tmp_path):
 
 def label(text: str) -> str:
     """Label of an undone todo scheduled for today, the default."""
-    return f"{date.today():%Y-%m-%d}  [ ] {text}"
+    return f"{'Today':14}  [ ] {text}"
 
 
 def run(app: KansoApp, check):
@@ -37,9 +37,55 @@ def prompts(app: KansoApp, id: str) -> list[str]:
 def test_todo_label(store):
     todo_list = store.add_list("Inbox")
     todo = store.add_todo(todo_list.id, "Buy milk", scheduled_at=None)
-    assert str(todo_label(todo)) == "            [ ] Buy milk"
-    todo = store.update_todo(todo.id, done=True, scheduled_at=date(2026, 10, 17))
-    assert str(todo_label(todo)) == "2026-10-17  [x] Buy milk"
+    assert str(todo_label(todo)) == f"{'':14}  [ ] Buy milk"
+    todo = store.update_todo(todo.id, done=True, scheduled_at=date(2020, 3, 7))
+    assert str(todo_label(todo)) == "Mar 7, 2020     [x] Buy milk"
+
+
+WEDNESDAY = date(2026, 10, 21)
+
+
+@pytest.mark.parametrize(
+    "day, expected",
+    [
+        (date(2026, 10, 21), "Today"),
+        (date(2026, 10, 22), "Tomorrow"),
+        (date(2026, 10, 20), "Yesterday"),
+        (date(2026, 10, 19), "Monday"),
+        (date(2026, 10, 23), "Friday"),
+        (date(2026, 10, 25), "Sunday"),
+        (date(2026, 10, 26), "Next Monday"),
+        (date(2026, 11, 1), "Next Sunday"),
+        (date(2026, 10, 18), "Last Sunday"),
+        (date(2026, 10, 12), "Last Monday"),
+        (date(2026, 11, 2), "Nov 2"),
+        (date(2026, 10, 11), "Oct 11"),
+        (date(2027, 1, 5), "Jan 5, 2027"),
+        (date(2025, 12, 31), "Dec 31, 2025"),
+    ],
+)
+def test_human_date(day, expected):
+    assert human_date(day, WEDNESDAY) == expected
+
+
+@pytest.mark.parametrize(
+    "today, day, expected",
+    [
+        (date(2026, 10, 19), date(2026, 10, 18), "Yesterday"),  # Monday: yesterday was last week
+        (date(2026, 10, 25), date(2026, 10, 26), "Tomorrow"),  # Sunday: tomorrow is next week
+        (date(2026, 10, 25), date(2026, 10, 19), "Monday"),
+        (date(2026, 10, 25), date(2026, 11, 1), "Next Sunday"),
+        (date(2026, 10, 25), date(2026, 11, 2), "Nov 2"),
+        (date(2026, 12, 31), date(2027, 1, 4), "Next Monday"),  # across a year boundary
+        (date(2026, 12, 31), date(2027, 1, 11), "Jan 11, 2027"),
+    ],
+)
+def test_human_date_at_week_edges(today, day, expected):
+    assert human_date(day, today) == expected
+
+
+def test_human_date_defaults_to_today():
+    assert human_date(date.today()) == "Today"
 
 
 def test_labels_render_as_plain_text_not_markup(store):
@@ -203,7 +249,7 @@ def test_shift_date_of_highlighted_todo(store, inbox, key, days):
     async def check(app, pilot):
         await pilot.press("l", "j")
         await pilot.press(key, key)
-        shifted = f"{date.today() + timedelta(days=2 * days):%Y-%m-%d}  [ ] b"
+        shifted = f"{human_date(date.today() + timedelta(days=2 * days)):14}  [ ] b"
         assert prompts(app, "todos") == [label("a"), shifted]
         assert highlighted(app) == shifted
 
