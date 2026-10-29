@@ -9,8 +9,8 @@ from textual.screen import ModalScreen
 from textual.widgets import Footer, Header, Input, OptionList
 from textual.widgets.option_list import Option
 
-from kanso.core.models import Todo
-from kanso.core.store import Store
+from kanso.core.models import Record, Todo, TodoList
+from kanso.core.store import NAME_MAX, Store
 
 
 def human_date(day: date, today: date | None = None) -> str:
@@ -37,6 +37,10 @@ def todo_label(todo: Todo) -> Content:
     return Content(f"{scheduled:14}  {'[x]' if todo.done else '[ ]'} {todo.text}")
 
 
+def index_of(records: list[Record], record: Record) -> int:
+    return next(i for i, r in enumerate(records) if r.id == record.id)
+
+
 class TextPrompt(ModalScreen[str | None]):
     """Asks for a line of text; dismisses with it stripped, or `None` if blank or cancelled."""
 
@@ -46,12 +50,12 @@ class TextPrompt(ModalScreen[str | None]):
     TextPrompt Input { width: 60; }
     """
 
-    def __init__(self, value: str = ""):
+    def __init__(self, value: str = "", placeholder: str = "Todo", max_length: int = 0):
         super().__init__()
-        self.value = value
+        self.input = Input(value, placeholder=placeholder, max_length=max_length)
 
     def compose(self) -> ComposeResult:
-        yield Input(self.value, placeholder="Todo")
+        yield self.input
 
     def on_input_submitted(self, event: Input.Submitted):
         self.dismiss(event.value.strip() or None)
@@ -73,8 +77,8 @@ class KansoApp(App):
     #todos { width: 1fr; }
     """
     BINDINGS = [
-        ("a", "add_todo", "Add"),
-        ("e", "edit_todo", "Edit"),
+        ("a", "add", "Add"),
+        ("e", "edit", "Edit"),
         Binding("space", "toggle_todo", "Done"),
         ("d", "delete_todo", "Delete"),
         Binding("full_stop", "shift_date(1)", "+1 day", key_display="."),
@@ -87,19 +91,27 @@ class KansoApp(App):
         super().__init__()
         self.store = store
         self.list_id: UUID | None = None
+        self.lists: list[TodoList] = []
         self.todos: list[Todo] = []
 
     def compose(self) -> ComposeResult:
         yield Header()
         with Horizontal():
-            yield VimOptionList(*(Option(Content(l.name), str(l.id)) for l in self.store.lists()), id="lists")
+            yield VimOptionList(id="lists")
             yield VimOptionList(id="todos")
         yield Footer()
 
     def on_mount(self):
-        lists = self.query_one("#lists", OptionList)
-        if lists.option_count:
-            lists.highlighted = 0
+        self.show_lists()
+
+    def show_lists(self, highlight: TodoList | None = None):
+        """Reload the lists, highlighting `highlight`, else the first one."""
+        self.lists = self.store.lists()
+        widget = self.query_one("#lists", OptionList)
+        widget.clear_options()
+        widget.add_options(Option(Content(l.name), str(l.id)) for l in self.lists)
+        if self.lists:
+            widget.highlighted = index_of(self.lists, highlight) if highlight else 0
 
     def show_todos(self, highlight: Todo | None = None):
         self.todos = self.store.todos(self.list_id)
@@ -107,7 +119,7 @@ class KansoApp(App):
         widget.clear_options()
         widget.add_options(todo_label(t) for t in self.todos)
         if highlight:
-            widget.highlighted = next(i for i, t in enumerate(self.todos) if t.id == highlight.id)
+            widget.highlighted = index_of(self.todos, highlight)
 
     def highlighted_todo(self) -> Todo | None:
         """The todo actions apply to: only while the todos pane is focused."""
@@ -123,7 +135,7 @@ class KansoApp(App):
         if event.option_list.id == "lists":
             self.action_focus_todos()
         else:
-            self.action_edit_todo()
+            self.edit_todo()
 
     def action_focus_todos(self):
         todos = self.query_one("#todos", OptionList)
@@ -134,7 +146,40 @@ class KansoApp(App):
     def action_focus_lists(self):
         self.query_one("#lists").focus()
 
-    def action_add_todo(self):
+    def lists_focused(self) -> bool:
+        return self.query_one("#lists").has_focus
+
+    def action_add(self):
+        self.add_list() if self.lists_focused() else self.add_todo()
+
+    def action_edit(self):
+        self.edit_list() if self.lists_focused() else self.edit_todo()
+
+    def list_prompt(self, value: str = "") -> TextPrompt:
+        return TextPrompt(value, placeholder="List", max_length=NAME_MAX)
+
+    def add_list(self):
+        """Add at the end and highlight it."""
+
+        def add(name: str | None):
+            if name:
+                self.show_lists(self.store.add_list(name))
+
+        self.push_screen(self.list_prompt(), add)
+
+    def edit_list(self):
+        widget = self.query_one("#lists", OptionList)
+        if widget.highlighted is None:
+            return
+        todo_list = self.lists[widget.highlighted]
+
+        def edit(name: str | None):
+            if name:
+                self.show_lists(self.store.rename_list(todo_list.id, name))
+
+        self.push_screen(self.list_prompt(todo_list.name), edit)
+
+    def add_todo(self):
         """Add below the highlighted todo, or at the end if none is."""
         if not self.list_id:
             return
@@ -148,7 +193,7 @@ class KansoApp(App):
 
         self.push_screen(TextPrompt(), add)
 
-    def action_edit_todo(self):
+    def edit_todo(self):
         todo = self.highlighted_todo()
         if not todo:
             return
