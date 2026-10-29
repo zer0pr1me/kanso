@@ -5,7 +5,7 @@ import pytest
 from textual.widgets import Input, OptionList
 
 from kanso.core.store import NAME_MAX, Store
-from kanso.tui.app import KansoApp, human_date, todo_label
+from kanso.tui.app import KansoApp, human_date, section_title, sections, todo_label
 
 
 @pytest.fixture
@@ -16,8 +16,8 @@ def store(tmp_path):
 
 
 def label(text: str) -> str:
-    """Label of an undone todo scheduled for today, the default."""
-    return f"{'Today':14}  [ ] {text}"
+    """Label of an undone todo."""
+    return f"[ ] {text}"
 
 
 def run(app: KansoApp, check):
@@ -36,10 +36,26 @@ def prompts(app: KansoApp, id: str) -> list[str]:
 
 def test_todo_label(store):
     todo_list = store.add_list("Inbox")
-    todo = store.add_todo(todo_list.id, "Buy milk", scheduled_at=None)
-    assert str(todo_label(todo)) == f"{'':14}  [ ] Buy milk"
-    todo = store.update_todo(todo.id, done=True, scheduled_at=date(2020, 3, 7))
-    assert str(todo_label(todo)) == "Mar 7, 2020     [x] Buy milk"
+    todo = store.add_todo(todo_list.id, "Buy milk")
+    assert str(todo_label(todo)) == "[ ] Buy milk"
+    todo = store.update_todo(todo.id, done=True)
+    assert str(todo_label(todo)) == "[x] Buy milk"
+
+
+def test_section_title():
+    assert section_title(date.today()) == "Today"
+    assert section_title(date(2020, 3, 7)) == "Mar 7, 2020"
+    assert section_title(None) == "No date"
+
+
+def test_sections_by_date_unscheduled_last_in_list_order(store):
+    todo_list = store.add_list("Inbox")
+    early, late = date(2026, 1, 1), date(2026, 1, 2)
+    for text, day in [("a", late), ("b", None), ("c", early), ("d", late), ("e", None)]:
+        store.add_todo(todo_list.id, text, scheduled_at=day)
+    grouped = [(day, [t.text for t in todos]) for day, todos in sections(store.todos(todo_list.id))]
+    assert grouped == [(early, ["c"]), (late, ["a", "d"]), (None, ["b", "e"])]
+    assert sections([]) == []
 
 
 WEDNESDAY = date(2026, 10, 21)
@@ -93,9 +109,10 @@ def test_labels_render_as_plain_text_not_markup(store):
     store.add_todo(todo_list.id, "[red]a[/red]", done=True, scheduled_at=None)
 
     async def check(app, pilot):
-        rendered = lambda id: app.query_one(f"#{id}").render_line(0).text.strip()
+        rendered = lambda id, y=0: app.query_one(f"#{id}").render_line(y).text.strip()
         assert rendered("lists") == "[b]Lists[/b]"
-        assert rendered("todos") == "[x] [red]a[/red]"
+        assert rendered("todos") == "No date"
+        assert rendered("todos", 1) == "[x] [red]a[/red]"
 
     run(KansoApp(store), check)
 
@@ -116,7 +133,7 @@ def test_shows_lists_and_first_lists_todos(store):
 
     async def check(app, pilot):
         assert prompts(app, "lists") == ["Inbox", "Work"]
-        assert prompts(app, "todos") == [label("a"), label("b")]
+        assert prompts(app, "todos") == ["Today", label("a"), label("b")]
 
     run(KansoApp(store), check)
 
@@ -129,9 +146,9 @@ def test_highlighting_a_list_shows_its_todos(store):
     async def check(app, pilot):
         app.query_one("#lists", OptionList).focus()
         await pilot.press("down")
-        assert prompts(app, "todos") == [label("c")]
+        assert prompts(app, "todos") == ["Today", label("c")]
         await pilot.press("up")
-        assert prompts(app, "todos") == [label("a")]
+        assert prompts(app, "todos") == ["Today", label("a")]
 
     run(KansoApp(store), check)
 
@@ -164,7 +181,7 @@ def test_add_appends_when_nothing_highlighted(store, inbox):
         app.query_one("#todos").focus()
         await pilot.press("a")
         await type_in_prompt(pilot, "new")
-        assert prompts(app, "todos") == [label("a"), label("b"), label("new")]
+        assert prompts(app, "todos") == ["Today", label("a"), label("b"), label("new")]
         assert highlighted(app) == label("new")
         assert app.focused.id == "todos"
 
@@ -195,7 +212,7 @@ def test_add_strips_text(store, inbox):
 def test_add_cancelled_or_blank_does_nothing(store, inbox, keys):
     async def check(app, pilot):
         await pilot.press("l", "a", *keys)
-        assert prompts(app, "todos") == [label("a"), label("b")]
+        assert prompts(app, "todos") == ["Today", label("a"), label("b")]
         assert app.screen is app.screen_stack[0]
 
     run(KansoApp(store), check)
@@ -216,11 +233,11 @@ def test_edit_highlighted_todo(store, inbox, key):
     async def check(app, pilot):
         todos = app.query_one("#todos", OptionList)
         todos.focus()
-        todos.highlighted = 1
+        todos.highlighted = 2
         await pilot.press(key)
         assert app.screen.query_one("Input").value == "b"
         await type_in_prompt(pilot, "c", clear=True)
-        assert prompts(app, "todos") == [label("a"), label("c")]
+        assert prompts(app, "todos") == ["Today", label("a"), label("c")]
         assert highlighted(app) == label("c")
 
     run(KansoApp(store), check)
@@ -252,9 +269,10 @@ def test_shift_date_of_highlighted_todo(store, inbox, key, days):
     async def check(app, pilot):
         await pilot.press("l", "j")
         await pilot.press(key, key)
-        shifted = f"{human_date(date.today() + timedelta(days=2 * days)):14}  [ ] b"
-        assert prompts(app, "todos") == [label("a"), shifted]
-        assert highlighted(app) == shifted
+        later = [human_date(date.today() + timedelta(days=2 * days)), label("b")]
+        today = ["Today", label("a")]
+        assert prompts(app, "todos") == (today + later if days > 0 else later + today)
+        assert highlighted(app) == label("b")
 
     run(KansoApp(store), check)
 
@@ -262,7 +280,7 @@ def test_shift_date_of_highlighted_todo(store, inbox, key, days):
 def test_shift_date_without_highlighted_todo_does_nothing(store, inbox):
     async def check(app, pilot):
         await pilot.press("full_stop", "comma")
-        assert prompts(app, "todos") == [label("a"), label("b")]
+        assert prompts(app, "todos") == ["Today", label("a"), label("b")]
 
     run(KansoApp(store), check)
 
@@ -281,7 +299,7 @@ def test_entering_a_list_focuses_its_first_todo(store, inbox, key):
 
 def test_entering_keeps_highlighted_todo(store, inbox):
     async def check(app, pilot):
-        app.query_one("#todos", OptionList).highlighted = 1
+        app.query_one("#todos", OptionList).highlighted = 2
         await pilot.press("right")
         assert highlighted(app) == label("b")
 
@@ -365,7 +383,7 @@ def test_space_toggles_highlighted_todo(store, inbox):
     async def check(app, pilot):
         await pilot.press("l", "j", "space")
         assert highlighted(app) == label("b").replace("[ ]", "[x]")
-        assert prompts(app, "todos")[0] == label("a")
+        assert prompts(app, "todos")[1] == label("a")
         await pilot.press("space")
         assert highlighted(app) == label("b")
 
@@ -387,7 +405,7 @@ def test_delete_highlights_next_or_previous(store, inbox, start, remaining, next
 
     async def check(app, pilot):
         await pilot.press("l", *["j"] * start, "d")
-        assert prompts(app, "todos") == [label(t) for t in remaining]
+        assert prompts(app, "todos") == ["Today", *(label(t) for t in remaining)]
         assert highlighted(app) == label(next_highlight)
 
     run(KansoApp(store), check)
@@ -412,7 +430,7 @@ def test_todo_actions_ignored_while_lists_focused(store, inbox, key):
     async def check(app, pilot):
         await pilot.press("l", "h", key)
         assert app.screen is app.screen_stack[0]
-        assert prompts(app, "todos") == [label("a"), label("b")]
+        assert prompts(app, "todos") == ["Today", label("a"), label("b")]
 
     run(KansoApp(store), check)
     assert [(t.text, t.done) for t in store.todos(inbox.id)] == [("a", False), ("b", False)]
@@ -421,7 +439,7 @@ def test_todo_actions_ignored_while_lists_focused(store, inbox, key):
 def test_toggle_and_delete_without_highlighted_todo_do_nothing(store, inbox):
     async def check(app, pilot):
         await pilot.press("space", "d")
-        assert prompts(app, "todos") == [label("a"), label("b")]
+        assert prompts(app, "todos") == ["Today", label("a"), label("b")]
 
     run(KansoApp(store), check)
     assert [(t.text, t.done) for t in store.todos(inbox.id)] == [("a", False), ("b", False)]
@@ -476,7 +494,7 @@ def test_add_first_list_then_todo(store):
         await type_in_prompt(pilot, "Inbox")
         await pilot.press("enter", "a")
         await type_in_prompt(pilot, "milk")
-        assert prompts(app, "todos") == [label("milk")]
+        assert prompts(app, "todos") == ["Today", label("milk")]
 
     run(KansoApp(store), check)
     assert list_names(store) == ["Inbox"]
@@ -504,7 +522,7 @@ def test_edit_highlighted_list(store, inbox):
         await type_in_prompt(pilot, "Job", clear=True)
         assert prompts(app, "lists") == ["Inbox", "Job"]
         assert highlighted_list(app) == "Job"
-        assert prompts(app, "todos") == [label("c")]
+        assert prompts(app, "todos") == ["Today", label("c")]
         assert app.focused.id == "lists"
 
     run(KansoApp(store), check)
@@ -542,5 +560,99 @@ def test_list_names_render_as_plain_text_after_rename(store, inbox):
         await pilot.press("e")
         await type_in_prompt(pilot, "[b]x[/b]", clear=True)
         assert app.query_one("#lists").render_line(0).text.strip() == "[b]x[/b]"
+
+    run(KansoApp(store), check)
+
+
+@pytest.fixture
+def dated(store):
+    """Inbox with "a" and "c" for tomorrow and "b" for today, added in that order."""
+    todo_list = store.add_list("Inbox")
+    tomorrow = date.today() + timedelta(days=1)
+    for text, day in [("a", tomorrow), ("b", date.today()), ("c", tomorrow)]:
+        store.add_todo(todo_list.id, text, scheduled_at=day)
+    return todo_list
+
+
+def test_todos_grouped_under_date_titles(store, dated):
+    async def check(app, pilot):
+        assert prompts(app, "todos") == ["Today", label("b"), "Tomorrow", label("a"), label("c")]
+
+    run(KansoApp(store), check)
+
+
+def test_cursor_skips_titles(store, dated):
+    async def check(app, pilot):
+        await pilot.press("l")
+        assert highlighted(app) == label("b")
+        await pilot.press("j")
+        assert highlighted(app) == label("a")
+        await pilot.press("k")
+        assert highlighted(app) == label("b")
+        await pilot.press("G", "g")
+        assert highlighted(app) == label("b")
+
+    run(KansoApp(store), check)
+
+
+def test_title_is_not_a_todo(store, dated):
+    async def check(app, pilot):
+        todos = app.query_one("#todos", OptionList)
+        todos.focus()
+        todos.highlighted = 0
+        await pilot.press("e", "space", "d")
+        assert app.screen is app.screen_stack[0]
+        assert prompts(app, "todos") == ["Today", label("b"), "Tomorrow", label("a"), label("c")]
+
+    run(KansoApp(store), check)
+
+
+def test_add_inserts_below_highlighted_on_its_date(store, dated):
+    async def check(app, pilot):
+        await pilot.press("l", "j", "a")
+        await type_in_prompt(pilot, "new")
+        assert prompts(app, "todos") == ["Today", label("b"), "Tomorrow", label("a"), label("new"), label("c")]
+        assert highlighted(app) == label("new")
+
+    run(KansoApp(store), check)
+    assert texts(store, dated) == ["a", "new", "b", "c"]
+    assert store.todos(dated.id)[1].scheduled_at == date.today() + timedelta(days=1)
+
+
+def test_add_below_unscheduled_stays_unscheduled(store):
+    todo_list = store.add_list("Inbox")
+    store.add_todo(todo_list.id, "a", scheduled_at=None)
+
+    async def check(app, pilot):
+        await pilot.press("l", "a")
+        await type_in_prompt(pilot, "b")
+        assert prompts(app, "todos") == ["No date", label("a"), label("b")]
+
+    run(KansoApp(store), check)
+
+
+def test_add_without_highlight_is_for_today(store, dated):
+    async def check(app, pilot):
+        app.query_one("#todos").focus()
+        await pilot.press("a")
+        await type_in_prompt(pilot, "new")
+        assert prompts(app, "todos") == ["Today", label("b"), label("new"), "Tomorrow", label("a"), label("c")]
+
+    run(KansoApp(store), check)
+
+
+@pytest.mark.parametrize("start, next_highlight", [(0, "a"), (1, "c"), (2, "a")])
+def test_delete_highlights_next_or_previous_as_shown(store, dated, start, next_highlight):
+    async def check(app, pilot):
+        await pilot.press("l", *["j"] * start, "d")
+        assert highlighted(app) == label(next_highlight)
+
+    run(KansoApp(store), check)
+
+
+def test_deleting_last_todo_of_a_date_removes_its_title(store, dated):
+    async def check(app, pilot):
+        await pilot.press("l", "d")
+        assert prompts(app, "todos") == ["Tomorrow", label("a"), label("c")]
 
     run(KansoApp(store), check)

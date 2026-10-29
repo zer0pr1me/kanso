@@ -1,4 +1,5 @@
 from datetime import date
+from itertools import groupby
 from uuid import UUID
 
 from textual.app import App, ComposeResult
@@ -32,9 +33,18 @@ def human_date(day: date, today: date | None = None) -> str:
 
 
 def todo_label(todo: Todo) -> Content:
-    """Scheduled date in an aligned column (blank if none), then checkbox and text, as plain text."""
-    scheduled = human_date(todo.scheduled_at) if todo.scheduled_at else ""
-    return Content(f"{scheduled:14}  {'[x]' if todo.done else '[ ]'} {todo.text}")
+    """Checkbox and text, as plain text."""
+    return Content(f"{'[x]' if todo.done else '[ ]'} {todo.text}")
+
+
+def section_title(day: date | None) -> str:
+    return human_date(day) if day else "No date"
+
+
+def sections(todos: list[Todo]) -> list[tuple[date | None, list[Todo]]]:
+    """Todos grouped by scheduled date, earliest first and unscheduled last, each group in list order."""
+    by_date = sorted(todos, key=lambda t: (t.scheduled_at is None, t.scheduled_at or date.min))
+    return [(day, list(group)) for day, group in groupby(by_date, lambda t: t.scheduled_at)]
 
 
 def index_of(records: list[Record], record: Record) -> int:
@@ -75,6 +85,7 @@ class KansoApp(App):
     CSS = """
     #lists { width: 30; }
     #todos { width: 1fr; }
+    #todos > .option-list--option-disabled { color: $text-accent; text-style: bold; }
     """
     BINDINGS = [
         ("a", "add", "Add"),
@@ -114,17 +125,23 @@ class KansoApp(App):
             widget.highlighted = index_of(self.lists, highlight) if highlight else 0
 
     def show_todos(self, highlight: Todo | None = None):
+        """Reload the todos under a title per scheduled date; titles are disabled, so the cursor skips them."""
         self.todos = self.store.todos(self.list_id)
         widget = self.query_one("#todos", OptionList)
         widget.clear_options()
-        widget.add_options(todo_label(t) for t in self.todos)
+        for day, todos in sections(self.todos):
+            widget.add_option(Option(Content(section_title(day)), disabled=True))
+            widget.add_options(Option(todo_label(t), str(t.id)) for t in todos)
         if highlight:
-            widget.highlighted = index_of(self.todos, highlight)
+            widget.highlighted = widget.get_option_index(str(highlight.id))
 
     def highlighted_todo(self) -> Todo | None:
         """The todo actions apply to: only while the todos pane is focused."""
         widget = self.query_one("#todos", OptionList)
-        return None if widget.highlighted is None or not widget.has_focus else self.todos[widget.highlighted]
+        option = widget.highlighted_option
+        if not (option and option.id and widget.has_focus):
+            return None
+        return next(t for t in self.todos if str(t.id) == option.id)
 
     def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted):
         if event.option_list.id == "lists":
@@ -139,8 +156,8 @@ class KansoApp(App):
 
     def action_focus_todos(self):
         todos = self.query_one("#todos", OptionList)
-        if todos.highlighted is None and todos.option_count:
-            todos.highlighted = 0
+        if todos.highlighted is None:
+            todos.action_first()
         todos.focus()
 
     def action_focus_lists(self):
@@ -180,15 +197,17 @@ class KansoApp(App):
         self.push_screen(self.list_prompt(todo_list.name), edit)
 
     def add_todo(self):
-        """Add below the highlighted todo, or at the end if none is."""
+        """Add below the highlighted todo on its date, or at the end for today if none is."""
         if not self.list_id:
             return
         current = self.highlighted_todo()
-        index = None if current is None else self.todos.index(current) + 1
+        index, fields = None, {}
+        if current:
+            index, fields = self.todos.index(current) + 1, {"scheduled_at": current.scheduled_at}
 
         def add(text: str | None):
             if text:
-                self.show_todos(self.store.add_todo(self.list_id, text, index))
+                self.show_todos(self.store.add_todo(self.list_id, text, index, **fields))
                 self.query_one("#todos").focus()
 
         self.push_screen(TextPrompt(), add)
@@ -209,11 +228,12 @@ class KansoApp(App):
             self.show_todos(self.store.update_todo(todo.id, done=not todo.done))
 
     def action_delete_todo(self):
-        """Delete, then highlight the next todo, or the previous one if it was last."""
+        """Delete, then highlight the next todo shown, or the previous one if it was last."""
         if not (todo := self.highlighted_todo()):
             return
-        index = self.todos.index(todo)
-        rest = [t for t in self.todos if t is not todo]
+        shown = [t for _, todos in sections(self.todos) for t in todos]
+        index = shown.index(todo)
+        rest = [t for t in shown if t is not todo]
         self.store.delete_todo(todo.id)
         self.show_todos(rest[min(index, len(rest) - 1)] if rest else None)
 
