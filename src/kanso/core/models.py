@@ -7,6 +7,7 @@ and `modified_at` is a hybrid-logical-clock stamp for last-writer-wins merges.
 from datetime import date
 from uuid import UUID, uuid4
 
+from sqlalchemy import JSON, Column
 from sqlmodel import Field, SQLModel
 
 
@@ -33,3 +34,4 @@ class Todo(Record, table=True):
     created_at: date = Field(default_factory=date.today)
     scheduled_at: date | None = None
     completed_at: date | None = None
+    labels: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))

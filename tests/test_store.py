@@ -277,3 +277,60 @@ def test_shift_missing_or_deleted_todo_not_found(store, todo_list):
     for id in (todo.id, uuid4()):
         with pytest.raises(NotFound):
             store.shift_todo(id, 1)
+
+
+# Labels
+
+
+def test_new_todo_has_no_labels(store, todo_list):
+    assert store.add_todo(todo_list.id, "a").labels == []
+
+
+def test_add_and_update_labels(store, todo_list):
+    todo = store.add_todo(todo_list.id, "a", labels=["home"])
+    store.update_todo(todo.id, labels=["work", "urgent"])
+    assert store.todos(todo_list.id)[0].labels == ["work", "urgent"]
+
+
+def test_labels_persist(path):
+    s = Store(path)
+    todo = s.add_todo(s.add_list("Inbox").id, "a", labels=["home"])
+    s.close()
+    s = Store(path)
+    assert s.todos(todo.list_id)[0].labels == ["home"]
+    s.close()
+
+
+def test_labels_are_cleaned(store, todo_list):
+    todo = store.add_todo(todo_list.id, "a", labels=[" home ", "#work", "", "#", "home", "Home"])
+    assert todo.labels == ["home", "work", "Home"]
+
+
+@pytest.mark.parametrize("labels", [["two words"], ["tab\tbed"], ["x" * 51]])
+def test_label_validation(store, todo_list, labels):
+    todo = store.add_todo(todo_list.id, "a", labels=["home"])
+    with pytest.raises(ValueError):
+        store.update_todo(todo.id, labels=labels)
+    with pytest.raises(ValueError):
+        store.add_todo(todo_list.id, "b", labels=labels)
+    assert [t.labels for t in store.todos(todo_list.id)] == [["home"]]
+
+
+def test_labels_must_be_a_list(store, todo_list):
+    with pytest.raises(TypeError):
+        store.add_todo(todo_list.id, "a", labels="home")
+
+
+def test_label_at_max_length(store, todo_list):
+    assert store.add_todo(todo_list.id, "a", labels=["x" * 50]).labels == ["x" * 50]
+
+
+def test_labels_lists_live_labels_sorted(store, todo_list):
+    other = store.add_list("Other")
+    store.add_todo(todo_list.id, "a", labels=["work", "Home"])
+    store.add_todo(other.id, "b", labels=["errands", "work"])
+    gone = store.add_todo(todo_list.id, "c", labels=["deleted"])
+    store.delete_todo(gone.id)
+    store.add_todo(store.add_list("Gone").id, "d", labels=["gone"])
+    store.delete_list(store.lists()[-1].id)
+    assert store.labels() == ["errands", "Home", "work"]

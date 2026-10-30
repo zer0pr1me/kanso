@@ -13,7 +13,8 @@ from kanso.core.migrations import migrate
 from kanso.core.models import Meta, Record, Todo, TodoList
 
 NAME_MAX = 200
-TODO_FIELDS = {"text", "done", "scheduled_at"}
+LABEL_MAX = 50
+TODO_FIELDS = {"text", "done", "scheduled_at", "labels"}
 
 
 class NotFound(LookupError):
@@ -49,6 +50,8 @@ def connect(path: Path) -> Engine:
 def apply_changes(todo: Todo, changes: dict) -> Todo:
     if unknown := changes.keys() - TODO_FIELDS:
         raise TypeError(f"Cannot set {', '.join(sorted(unknown))}")
+    if "labels" in changes:
+        changes = {**changes, "labels": clean_labels(changes["labels"])}
     if "done" in changes and changes["done"] != todo.done:
         todo.completed_at = date.today() if changes["done"] else None
     todo.sqlmodel_update(changes)
@@ -60,6 +63,20 @@ def clean_name(name: str) -> str:
     if not 0 < len(name) <= NAME_MAX:
         raise ValueError(f"Name must be 1-{NAME_MAX} characters")
     return name
+
+
+def clean_labels(labels: list[str]) -> list[str]:
+    """Stripped of whitespace and a leading `#`, blanks and repeats dropped, in order."""
+    if isinstance(labels, str):
+        raise TypeError("Labels must be a list of strings")
+    cleaned = []
+    for label in labels:
+        label = label.strip().removeprefix("#")
+        if len(label) > LABEL_MAX or any(c.isspace() for c in label):
+            raise ValueError(f"Labels must be at most {LABEL_MAX} characters, without spaces")
+        if label and label not in cleaned:
+            cleaned.append(label)
+    return cleaned
 
 
 def position_at(items: list[Record], index: int | None) -> str:
@@ -137,6 +154,10 @@ class Store:
         self._get(TodoList, list_id)
         return self._live(Todo, Todo.list_id == list_id)
 
+    def labels(self) -> list[str]:
+        """Every label used by a live todo, sorted case-insensitively."""
+        return sorted({label for todo in self._live(Todo) for label in todo.labels}, key=str.casefold)
+
     def add_todo(self, list_id: UUID, text: str = "", index: int | None = None, **fields) -> Todo:
         """Insert at `index` in the list's order (`None` appends); `fields` as in `update_todo`.
 
@@ -147,7 +168,7 @@ class Store:
         return self._save(apply_changes(todo, fields))
 
     def update_todo(self, todo_id: UUID, **changes) -> Todo:
-        """Set any of `text`, `done`, `scheduled_at`; toggling `done` sets `completed_at`."""
+        """Set any of `text`, `done`, `scheduled_at`, `labels`; toggling `done` sets `completed_at`."""
         return self._save(apply_changes(self._get(Todo, todo_id), changes))
 
     def shift_todo(self, todo_id: UUID, days: int) -> Todo:

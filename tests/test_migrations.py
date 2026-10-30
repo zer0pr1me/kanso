@@ -139,3 +139,24 @@ def test_upgrade_rows_from_older_version(monkeypatch):
 def test_upgrade_rows_from_newer_version_refused():
     with pytest.raises(ValueError, match="newer"):
         upgrade({}, current_version() + 1)
+
+
+def test_upgrade_adds_empty_labels_to_todos():
+    rows = {"todolist": [{"id": "l"}], "todo": [{"id": "1", "text": "a"}]}
+    assert migrations.add_todo_labels(rows) == {"todolist": [{"id": "l"}], "todo": [{"id": "1", "text": "a", "labels": "[]"}]}
+    assert migrations.add_todo_labels({}) == {"todo": []}
+
+
+def test_upgrades_database_from_before_labels(path):
+    store = Store(path)
+    inbox = store.add_list("Inbox")
+    store.add_todo(inbox.id, "a")
+    store.close()
+    sql(path, "ALTER TABLE todo DROP COLUMN labels")
+    sql(path, "UPDATE meta SET value = '0' WHERE key = 'schema_version'")
+    store = Store(path)
+    [todo] = store.todos(inbox.id)
+    assert (todo.text, todo.labels) == ("a", [])
+    store.update_todo(todo.id, labels=["home"])
+    store.close()
+    assert stored_version(path) == "1"

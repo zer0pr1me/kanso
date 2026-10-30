@@ -7,6 +7,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.content import Content
 from textual.screen import ModalScreen
+from textual.suggester import Suggester
 from textual.widgets import Footer, Header, Input, OptionList
 from textual.widgets.option_list import Option
 
@@ -32,9 +33,13 @@ def human_date(day: date, today: date | None = None) -> str:
     return f"{day:%b} {day.day}" + ("" if day.year == today.year else f", {day.year}")
 
 
+LABEL_STYLE = "bold $text-accent on $accent-muted"
+
+
 def todo_label(todo: Todo) -> Content:
-    """Checkbox and text, as plain text."""
-    return Content(f"{'[x]' if todo.done else '[ ]'} {todo.text}")
+    """Checkbox and text, then each label as a `#label` chip, as plain text."""
+    chips = [part for label in todo.labels for part in (" ", (f" #{label} ", LABEL_STYLE))]
+    return Content.assemble(f"{'[x]' if todo.done else '[ ]'} {todo.text}", *chips)
 
 
 def section_title(day: date | None) -> str:
@@ -51,24 +56,45 @@ def index_of(records: list[Record], record: Record) -> int:
     return next(i for i, r in enumerate(records) if r.id == record.id)
 
 
-class TextPrompt(ModalScreen[str | None]):
-    """Asks for a line of text; dismisses with it stripped, or `None` if blank or cancelled."""
+class LabelSuggester(Suggester):
+    """Completes the word being typed to a label not entered yet, case-insensitively, then a space."""
 
-    BINDINGS = [("escape", "dismiss", "Cancel")]
+    def __init__(self, labels: list[str]):
+        super().__init__(use_cache=False)
+        self.labels = labels
+
+    async def get_suggestion(self, value: str) -> str | None:
+        words = value.split(" ")
+        if not words[-1]:
+            return None
+        typed = words[-1].casefold()
+        match = next((l for l in self.labels if l.casefold().startswith(typed) and l not in words), None)
+        return match and f"{value[: -len(words[-1])]}{match} "
+
+
+class TextPrompt(ModalScreen[str | None]):
+    """Asks for a line of text; dismisses with it stripped, or `None` if cancelled."""
+
+    BINDINGS = [("escape", "dismiss", "Cancel"), Binding("tab", "complete", show=False)]
     CSS = """
     TextPrompt { align: center middle; }
     TextPrompt Input { width: 60; }
     """
 
-    def __init__(self, value: str = "", placeholder: str = "Todo", max_length: int = 0):
+    def __init__(self, value: str = "", **options):
+        """`options` go to the `Input`; the placeholder defaults to "Todo"."""
         super().__init__()
-        self.input = Input(value, placeholder=placeholder, max_length=max_length)
+        self.input = Input(value, **{"placeholder": "Todo", **options})
 
     def compose(self) -> ComposeResult:
         yield self.input
 
+    def action_complete(self):
+        """Accept the suggestion, if any (right arrow does too)."""
+        self.input.action_cursor_right()
+
     def on_input_submitted(self, event: Input.Submitted):
-        self.dismiss(event.value.strip() or None)
+        self.dismiss(event.value.strip())
 
 
 class VimOptionList(OptionList):
@@ -91,6 +117,7 @@ class KansoApp(App):
         ("a", "add", "Add"),
         ("e", "edit", "Edit"),
         Binding("space", "toggle_todo", "Done"),
+        Binding("number_sign", "edit_labels", "Labels", key_display="#"),
         ("d", "delete_todo", "Delete"),
         Binding("full_stop", "shift_date(1)", "+1 day", key_display="."),
         Binding("comma", "shift_date(-1)", "-1 day", key_display=","),
@@ -222,6 +249,23 @@ class KansoApp(App):
                 self.show_todos(self.store.update_todo(todo.id, text=text))
 
         self.push_screen(TextPrompt(todo.text), edit)
+
+    def action_edit_labels(self):
+        """Edit as space-separated words, completing ones already in use."""
+        if not (todo := self.highlighted_todo()):
+            return
+
+        def edit(value: str | None):
+            if value is None:
+                return
+            try:
+                self.show_todos(self.store.update_todo(todo.id, labels=value.split()))
+            except ValueError as error:
+                self.notify(str(error), severity="error")
+
+        value = "".join(f"{label} " for label in todo.labels)
+        suggester = LabelSuggester(self.store.labels())
+        self.push_screen(TextPrompt(value, placeholder="Labels", suggester=suggester, select_on_focus=False), edit)
 
     def action_toggle_todo(self):
         if todo := self.highlighted_todo():

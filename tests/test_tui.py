@@ -5,7 +5,7 @@ import pytest
 from textual.widgets import Input, OptionList
 
 from kanso.core.store import NAME_MAX, Store
-from kanso.tui.app import KansoApp, human_date, section_title, sections, todo_label
+from kanso.tui.app import LABEL_STYLE, KansoApp, LabelSuggester, human_date, section_title, sections, todo_label
 
 
 @pytest.fixture
@@ -656,3 +656,137 @@ def test_deleting_last_todo_of_a_date_removes_its_title(store, dated):
         assert prompts(app, "todos") == ["Tomorrow", label("a"), label("c")]
 
     run(KansoApp(store), check)
+
+
+def test_todo_label_shows_labels(store):
+    todo = store.add_todo(store.add_list("Inbox").id, "Buy milk", labels=["errands", "[b]x"])
+    content = todo_label(todo)
+    assert str(content) == "[ ] Buy milk  #errands   #[b]x "
+    assert [(content.plain[s.start : s.end], s.style) for s in content.spans] == [
+        (" #errands ", LABEL_STYLE),
+        (" #[b]x ", LABEL_STYLE),
+    ]
+
+
+def suggest(labels, value):
+    return asyncio.run(LabelSuggester(labels).get_suggestion(value))
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        ("w", "work "),
+        ("W", "work "),
+        ("h", "Home "),
+        ("home x", None),
+        ("work w", "work workshop "),
+        ("work ", None),
+        ("", None),
+        ("z", None),
+        ("a  wo", "a  work "),
+    ],
+)
+def test_label_suggester(value, expected):
+    assert suggest(["errands", "Home", "work", "workshop"], value) == expected
+
+
+@pytest.fixture
+def labelled(store):
+    todo_list = store.add_list("Inbox")
+    store.add_todo(todo_list.id, "a", labels=["home", "work"])
+    store.add_todo(todo_list.id, "b")
+    return todo_list
+
+
+def with_chips(text: str, *labels: str) -> str:
+    return label(text) + "".join(f"  #{l} " for l in labels)
+
+
+def labels_of(store, todo_list):
+    return [t.labels for t in store.todos(todo_list.id)]
+
+
+def test_edit_labels_prefilled_and_saved(store, labelled):
+    async def check(app, pilot):
+        await pilot.press("l", "number_sign")
+        prompt = app.screen.query_one(Input)
+        assert (prompt.value, prompt.placeholder) == ("home work ", "Labels")
+        await pilot.press(*"#urgent", "enter")
+        assert highlighted(app) == with_chips("a", "home", "work", "urgent")
+
+    run(KansoApp(store), check)
+    assert labels_of(store, labelled) == [["home", "work", "urgent"], []]
+
+
+@pytest.mark.parametrize("accept", ["tab", "right"])
+def test_edit_labels_autocompletes_existing(store, labelled, accept):
+    async def check(app, pilot):
+        await pilot.press("l", "j", "number_sign", "w")
+        await pilot.pause()
+        await pilot.press(accept, "h")
+        await pilot.pause()
+        await pilot.press(accept, "enter")
+        assert highlighted(app) == with_chips("b", "work", "home")
+
+    run(KansoApp(store), check)
+    assert labels_of(store, labelled) == [["home", "work"], ["work", "home"]]
+
+
+def test_tab_without_suggestion_keeps_typing(store, labelled):
+    async def check(app, pilot):
+        await pilot.press("l", "j", "number_sign", "z", "tab", "enter")
+
+    run(KansoApp(store), check)
+    assert labels_of(store, labelled)[1] == ["z"]
+
+
+def test_clearing_labels(store, labelled):
+    async def check(app, pilot):
+        await pilot.press("l", "number_sign", "ctrl+u", "enter")
+        assert highlighted(app) == label("a")
+
+    run(KansoApp(store), check)
+    assert labels_of(store, labelled) == [[], []]
+
+
+def test_edit_labels_cancelled_keeps_them(store, labelled):
+    async def check(app, pilot):
+        await pilot.press("l", "number_sign", "ctrl+u", "escape")
+        assert app.screen is app.screen_stack[0]
+
+    run(KansoApp(store), check)
+    assert labels_of(store, labelled)[0] == ["home", "work"]
+
+
+def test_invalid_label_is_reported_and_not_saved(store, labelled):
+    async def check(app, pilot):
+        await pilot.press("l", "number_sign", *"x" * 51, "enter")
+        assert [n.severity for n in app._notifications] == ["error"]
+        assert highlighted(app) == with_chips("a", "home", "work")
+
+    run(KansoApp(store), check)
+    assert labels_of(store, labelled)[0] == ["home", "work"]
+
+
+def test_edit_labels_needs_highlighted_todo(store, labelled):
+    async def check(app, pilot):
+        await pilot.press("number_sign")
+        assert app.screen is app.screen_stack[0]
+
+    run(KansoApp(store), check)
+
+
+def test_hash_types_into_prompt(store, labelled):
+    async def check(app, pilot):
+        await pilot.press("l", "j", "e", "ctrl+u", "number_sign", "1", "enter")
+
+    run(KansoApp(store), check)
+    assert texts(store, labelled) == ["a", "#1"]
+
+
+def test_blank_todo_text_still_ignored(store, labelled):
+    async def check(app, pilot):
+        await pilot.press("l", "a", "space", "enter")
+
+    run(KansoApp(store), check)
+    assert texts(store, labelled) == ["a", "b"]

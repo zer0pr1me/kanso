@@ -17,7 +17,13 @@ from sqlmodel import SQLModel
 
 type Rows = dict[str, list[dict]]
 
-MIGRATIONS: list[Callable[[Rows], Rows]] = []
+
+
+def add_todo_labels(rows: Rows) -> Rows:
+    return {**rows, "todo": [{**row, "labels": "[]"} for row in rows.get("todo", [])]}
+
+
+MIGRATIONS: list[Callable[[Rows], Rows]] = [add_todo_labels]
 
 VERSION_KEY = "schema_version"
 
