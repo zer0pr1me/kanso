@@ -47,8 +47,9 @@ def section_title(day: date | None) -> str:
 
 
 def sections(todos: list[Todo]) -> list[tuple[date | None, list[Todo]]]:
-    """Todos grouped by scheduled date, earliest first and unscheduled last, each group in list order."""
-    by_date = sorted(todos, key=lambda t: (t.scheduled_at is None, t.scheduled_at or date.min))
+    """Todos grouped by scheduled date, earliest first and unscheduled last, each group autosorted:
+    done todos first, otherwise in list order."""
+    by_date = sorted(todos, key=lambda t: (t.scheduled_at is None, t.scheduled_at or date.min, not t.done))
     return [(day, list(group)) for day, group in groupby(by_date, lambda t: t.scheduled_at)]
 
 

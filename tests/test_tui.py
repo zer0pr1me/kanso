@@ -58,6 +58,15 @@ def test_sections_by_date_unscheduled_last_in_list_order(store):
     assert sections([]) == []
 
 
+def test_sections_put_done_first_in_list_order(store):
+    todo_list = store.add_list("Inbox")
+    for text in "abcd":
+        store.add_todo(todo_list.id, text, done=text in "bd")
+    store.add_todo(todo_list.id, "e", done=True, scheduled_at=None)
+    grouped = [(day, [t.text for t in todos]) for day, todos in sections(store.todos(todo_list.id))]
+    assert grouped == [(date.today(), ["b", "d", "a", "c"]), (None, ["e"])]
+
+
 WEDNESDAY = date(2026, 10, 21)
 
 
@@ -383,9 +392,10 @@ def test_space_toggles_highlighted_todo(store, inbox):
     async def check(app, pilot):
         await pilot.press("l", "j", "space")
         assert highlighted(app) == label("b").replace("[ ]", "[x]")
-        assert prompts(app, "todos")[1] == label("a")
+        assert prompts(app, "todos")[1:] == [label("b").replace("[ ]", "[x]"), label("a")]
         await pilot.press("space")
         assert highlighted(app) == label("b")
+        assert prompts(app, "todos")[1:] == [label("a"), label("b")]
 
     run(KansoApp(store), check)
     assert [(t.done, t.completed_at) for t in store.todos(inbox.id)] == [(False, None), (False, None)]
