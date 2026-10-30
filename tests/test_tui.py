@@ -8,6 +8,7 @@ from kanso.core.store import NAME_MAX, Store
 from kanso.tui import app as app_module
 from kanso.tui.app import (
     LABEL_STYLE,
+    RULE_STYLE,
     KansoApp,
     LabelSuggester,
     RepeatDialog,
@@ -829,10 +830,10 @@ def test_describe_rule(store):
     assert described == ["Daily", "Every 3 days", "Mon, Wed, Fri", "Monthly on 1, 15"]
 
 
-def test_repeat_label_is_plain_text_with_muted_rule(store):
+def test_repeat_label_is_plain_text_with_rule_chip(store):
     content = repeat_label(store.add_repeat(store.add_list("Inbox").id, "[b]Water"))
-    assert str(content) == "[b]Water  Daily"
-    assert [(content.plain[s.start : s.end], s.style) for s in content.spans] == [("  Daily", "$text-muted")]
+    assert str(content) == "[b]Water  Daily "
+    assert [(content.plain[s.start : s.end], s.style) for s in content.spans] == [(" Daily ", RULE_STYLE)]
 
 
 def test_todo_label_marks_spawned_todos(store):
@@ -876,9 +877,9 @@ def test_r_toggles_panes_keeping_focus_side(store, repeating):
     async def check(app, pilot):
         await pilot.press("r")
         assert pane(app) == "repeats" and app.focused.id == "lists"
-        assert prompts(app, "repeats") == ["x  Daily", "y  Daily"]
+        assert prompts(app, "repeats") == ["x  Daily ", "y  Daily "]
         await pilot.press("l")
-        assert app.focused.id == "repeats" and highlighted_repeat(app) == "x  Daily"
+        assert app.focused.id == "repeats" and highlighted_repeat(app) == "x  Daily "
         await pilot.press("r")
         assert pane(app) == "todos" and app.focused.id == "todos"
         await pilot.press("r", "h")
@@ -893,7 +894,7 @@ def test_highlighting_a_list_shows_its_repeats(store, repeating):
 
     async def check(app, pilot):
         await pilot.press("r", "j")
-        assert prompts(app, "repeats") == ["z  Every 2 days"]
+        assert prompts(app, "repeats") == ["z  Every 2 days "]
 
     run(KansoApp(store), check)
 
@@ -917,9 +918,9 @@ async def open_dialog(pilot, *keys: str) -> RepeatDialog:
     return pilot.app.screen
 
 
-async def choose_kind(pilot, index: int):
-    """From the text field, first focusing the kinds, pick the one at `index` and move to its field."""
-    await pilot.press("tab", *["down"] * index, "enter", "tab")
+async def choose_kind(pilot, steps: int):
+    """From the text field, pick the kind `steps` below the current one and move to its field."""
+    await pilot.press("tab", *["down"] * steps, "enter", "tab")
 
 
 def test_add_daily_repeat_spawns_todays_todo(store, repeating):
@@ -927,8 +928,8 @@ def test_add_daily_repeat_spawns_todays_todo(store, repeating):
         await open_dialog(pilot, "a")
         await type_in_prompt(pilot, " Water ")
         assert app.screen is app.screen_stack[0]
-        assert prompts(app, "repeats") == ["x  Daily", "y  Daily", "Water  Daily"]
-        assert highlighted_repeat(app) == "Water  Daily" and app.focused.id == "repeats"
+        assert prompts(app, "repeats") == ["x  Daily ", "y  Daily ", "Water  Daily "]
+        assert highlighted_repeat(app) == "Water  Daily " and app.focused.id == "repeats"
         assert prompts(app, "todos")[-1] == label("Water ↻")
 
     run(KansoApp(store), check)
@@ -983,17 +984,18 @@ def test_dialog_shows_only_the_chosen_kinds_field(store, repeating):
 
 
 @pytest.mark.parametrize(
-    "index, value, error",
-    [(0, "", "blank"), (1, "0", "Interval"), (2, None, "weekdays"), (3, "", "days of month"), (3, "32", "1-31")],
+    "steps, value, error",
+    [(1, "0", "Interval"), (2, None, "weekdays"), (3, "", "days of month"), (3, "32", "1-31")],
 )
-def test_invalid_repeat_is_reported_and_dialog_stays(store, repeating, index, value, error):
+@pytest.mark.parametrize("save", ["ctrl+s", "escape"])
+def test_invalid_repeat_is_reported_and_dialog_stays(store, repeating, steps, value, error, save):
     async def check(app, pilot):
         dialog = await open_dialog(pilot, "a")
-        await pilot.press(*("Water" if error != "blank" else ""))
-        await choose_kind(pilot, index)
+        await pilot.press(*"Water")
+        await choose_kind(pilot, steps)
         if value is not None:
             await pilot.press("ctrl+u", *value)
-        await pilot.press("ctrl+s")
+        await pilot.press(save)
         assert app.screen is dialog
         [notification] = app._notifications
         assert notification.severity == "error" and error in notification.message
@@ -1002,14 +1004,83 @@ def test_invalid_repeat_is_reported_and_dialog_stays(store, repeating, index, va
     assert len(store.repeats(repeating.id)) == 2
 
 
-def test_add_repeat_cancelled(store, repeating):
+def test_escape_saves_new_repeat(store, repeating):
     async def check(app, pilot):
         await open_dialog(pilot, "a")
-        await pilot.press(*"Water", "escape")
+        await pilot.press(*"Water", "tab", "down", "escape")
+        assert app.screen is app.screen_stack[0] and app.focused.id == "repeats"
+
+    run(KansoApp(store), check)
+    assert repeats_of(store, repeating)[-1] == ("Water", "Daily")
+
+
+@pytest.mark.parametrize("keys", [["escape"], [" ", "enter"], ["ctrl+s"]])
+def test_new_repeat_with_blank_text_is_dropped(store, repeating, keys):
+    async def check(app, pilot):
+        await open_dialog(pilot, "a")
+        await pilot.press(*keys)
         assert app.screen is app.screen_stack[0] and app.focused.id == "repeats"
 
     run(KansoApp(store), check)
     assert len(store.repeats(repeating.id)) == 2
+
+
+@pytest.mark.parametrize("save", ["escape", "enter"])
+def test_editing_repeat_to_blank_text_is_reported(store, repeating, save):
+    async def check(app, pilot):
+        dialog = await open_dialog(pilot, "e")
+        await pilot.press("ctrl+u", save)
+        assert app.screen is dialog
+        assert ["blank" in n.message for n in app._notifications] == [True]
+
+    run(KansoApp(store), check)
+    assert repeats_of(store, repeating)[0] == ("x", "Daily")
+
+
+def test_escape_without_changes_writes_nothing(store, repeating):
+    stamp = store.repeats(repeating.id)[0].modified_at
+
+    async def check(app, pilot):
+        await open_dialog(pilot, "e")
+        await pilot.press("tab", "down", "enter", "up", "enter", "escape")
+        assert app.screen is app.screen_stack[0]
+
+    run(KansoApp(store), check)
+    assert store.repeats(repeating.id)[0].modified_at == stamp
+
+
+def test_escape_saves_edited_repeat(store, repeating):
+    async def check(app, pilot):
+        await open_dialog(pilot, "e")
+        await pilot.press("end", "z", "escape")
+        assert highlighted_repeat(app) == "xz  Daily "
+
+    run(KansoApp(store), check)
+    assert repeats_of(store, repeating)[0] == ("xz", "Daily")
+
+
+def test_kinds_cursor_starts_on_the_chosen_kind(store, repeating):
+    store.update_repeat(store.repeats(repeating.id)[0].id, kind="monthdays", monthdays=[1])
+
+    async def check(app, pilot):
+        dialog = await open_dialog(pilot, "e")
+        await pilot.press("tab", "up", "enter")
+        assert dialog.kind() == "weekdays"
+
+    run(KansoApp(store), check)
+
+
+def test_vim_movement_in_dialog(store, repeating):
+    async def check(app, pilot):
+        dialog = await open_dialog(pilot, "a")
+        await pilot.press(*"Gym", "tab", "j", "j", "k", "j", "enter")
+        assert dialog.kind() == "weekdays"
+        await pilot.press("tab", "G", "space", "g", "space", "j", "j", "space", "j", "k", "space", "space")
+        assert sorted(dialog.weekdays.selected) == [0, 2, 6]
+        await pilot.press("ctrl+s")
+
+    run(KansoApp(store), check)
+    assert repeats_of(store, repeating)[-1] == ("Gym", "Mon, Wed, Sun")
 
 
 def test_app_keys_ignored_inside_dialog(store, repeating):
@@ -1033,7 +1104,7 @@ def test_edit_repeat_prefilled_and_saved(store, repeating, key):
         assert dialog.fields.current == "weekdays" and dialog.weekdays.selected == [1, 3]
         await pilot.press("tab", "tab", "down", "down", "down", "space", "shift+tab", "shift+tab")
         await type_in_prompt(pilot, "z", clear=True)
-        assert highlighted_repeat(app) == "z  Tue"
+        assert highlighted_repeat(app) == "z  Tue "
 
     run(KansoApp(store), check)
     assert repeats_of(store, repeating) == [("x", "Daily"), ("z", "Tue")]
@@ -1071,8 +1142,7 @@ def test_edit_repeat_rule_spawns_if_now_due(store, repeating):
     async def check(app, pilot):
         assert prompts(app, "todos") == ["Today", label("a"), label("y ↻")]
         await open_dialog(pilot, "e")
-        await choose_kind(pilot, 0)
-        await pilot.press("ctrl+s")
+        await pilot.press("tab", "up", "up", "enter", "ctrl+s")
         assert prompts(app, "todos") == ["Today", label("a"), label("y ↻"), label("x ↻")]
 
     run(KansoApp(store), check)
@@ -1093,8 +1163,8 @@ def test_edit_and_delete_need_highlighted_repeat(store, repeating):
 def test_delete_repeat_keeps_its_todos(store, repeating, start, next_highlight):
     async def check(app, pilot):
         await pilot.press("r", "l", *["j"] * start, "d")
-        assert prompts(app, "repeats") == [f"{next_highlight}  Daily"]
-        assert highlighted_repeat(app) == f"{next_highlight}  Daily"
+        assert prompts(app, "repeats") == [f"{next_highlight}  Daily "]
+        assert highlighted_repeat(app) == f"{next_highlight}  Daily "
 
     run(KansoApp(store), check)
     assert texts(store, repeating) == ["a", "x", "y"]

@@ -22,7 +22,7 @@ from textual.widgets import (
 from textual.widgets.option_list import Option
 
 from kanso.core.models import Record, Repeat, Todo, TodoList
-from kanso.core.repeats import clean_rule
+from kanso.core.repeats import RULE_FIELDS, clean_rule
 from kanso.core.store import NAME_MAX, Store, clean_text
 
 
@@ -45,6 +45,7 @@ def human_date(day: date, today: date | None = None) -> str:
 
 
 LABEL_STYLE = "bold $text-accent on $accent-muted"
+RULE_STYLE = "$text-secondary on $secondary-muted"
 
 
 def todo_label(todo: Todo) -> Content:
@@ -65,8 +66,8 @@ def describe_rule(repeat: Repeat) -> str:
 
 
 def repeat_label(repeat: Repeat) -> Content:
-    """Text, then the rule muted, as plain text."""
-    return Content.assemble(repeat.text, (f"  {describe_rule(repeat)}", "$text-muted"))
+    """Text, then the rule as a chip, as plain text."""
+    return Content.assemble(repeat.text, " ", (f" {describe_rule(repeat)} ", RULE_STYLE))
 
 
 def section_title(day: date | None) -> str:
@@ -131,17 +132,42 @@ class TextPrompt(ModalScreen[str | None]):
         self.dismiss(event.value.strip())
 
 
+VIM_BINDINGS = [
+    Binding("j", "cursor_down", show=False),
+    Binding("k", "cursor_up", show=False),
+    Binding("g", "first", show=False),
+    Binding("G", "last", show=False),
+]
+
+
+class VimSelectionList(SelectionList):
+    BINDINGS = VIM_BINDINGS
+
+
+class VimRadioSet(RadioSet):
+    BINDINGS = [Binding("j", "next_button", show=False), Binding("k", "previous_button", show=False)]
+
+    def on_mount(self):
+        """Start the cursor on the pressed button instead of the first, once `RadioSet` has set it."""
+        self.call_later(self.move_to_pressed)
+
+    def move_to_pressed(self):
+        for _ in range(self.pressed_index):
+            self.action_next_button()
+
+
 REPEAT_KINDS = {"daily": "Daily", "days": "Every N days", "weekdays": "Weekdays", "monthdays": "Days of month"}
 
 
 class RepeatDialog(ModalScreen[tuple[str, dict] | None]):
     """Asks for a repeat's text and rule, showing only the chosen kind's field.
 
-    Enter in a text field or ctrl+s saves: dismisses with the text and rule validated, or
-    reports what's invalid and stays open. Escape dismisses with `None`.
+    Enter in a text field, escape or ctrl+s saves: dismisses with the text and rule validated,
+    or reports what's invalid and stays open. Dismisses with `None` instead when nothing
+    changed, or when adding with blank text.
     """
 
-    BINDINGS = [("escape", "dismiss", "Cancel"), ("ctrl+s", "save", "Save")]
+    BINDINGS = [Binding("escape,ctrl+s", "save", "Save")]
     CSS = """
     RepeatDialog { align: center middle; }
     RepeatDialog > Vertical { width: 60; height: auto; border: round $accent; background: $surface; }
@@ -150,13 +176,14 @@ class RepeatDialog(ModalScreen[tuple[str, dict] | None]):
 
     def __init__(self, repeat: Repeat | None = None):
         super().__init__()
+        self.repeat = repeat
         r = repeat or Repeat(text="", position="")
         kind = "daily" if r.kind == "days" and r.interval == 1 else r.kind
         self.text = Input(r.text, placeholder="Repeating todo")
-        self.kinds = RadioSet(*(RadioButton(label, kind == k, id=f"kind-{k}") for k, label in REPEAT_KINDS.items()))
+        self.kinds = VimRadioSet(*(RadioButton(label, kind == k, id=f"kind-{k}") for k, label in REPEAT_KINDS.items()))
         self.interval = Input(str(max(r.interval, 2)), placeholder="Days", restrict=r"[0-9]*", id="days")
         days = enumerate(calendar.day_abbr)
-        self.weekdays = SelectionList(*((name, d, d in r.weekdays) for d, name in days), id="weekdays")
+        self.weekdays = VimSelectionList(*((name, d, d in r.weekdays) for d, name in days), id="weekdays")
         monthdays = " ".join(map(str, r.monthdays))
         self.monthdays = Input(monthdays, placeholder="Days of month, e.g. 1 15", restrict=r"[0-9 ]*", id="monthdays")
         self.fields = ContentSwitcher(self.interval, self.weekdays, self.monthdays, initial=self.field_for(kind))
@@ -193,19 +220,21 @@ class RepeatDialog(ModalScreen[tuple[str, dict] | None]):
         self.action_save()
 
     def action_save(self):
+        if not (self.repeat or self.text.value.strip()):
+            self.dismiss(None)
+            return
         try:
-            self.dismiss((clean_text(self.text.value), clean_rule(**self.rule())))
+            result = clean_text(self.text.value), clean_rule(**self.rule())
         except ValueError as error:
             self.notify(str(error), severity="error")
+            return
+        r = self.repeat
+        unchanged = r and result == (r.text, {field: getattr(r, field) for field in RULE_FIELDS})
+        self.dismiss(None if unchanged else result)
 
 
 class VimOptionList(OptionList):
-    BINDINGS = [
-        Binding("j", "cursor_down", show=False),
-        Binding("k", "cursor_up", show=False),
-        Binding("g", "first", show=False),
-        Binding("G", "last", show=False),
-    ]
+    BINDINGS = VIM_BINDINGS
 
 
 class KansoApp(App):
