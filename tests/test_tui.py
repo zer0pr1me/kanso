@@ -230,8 +230,8 @@ def test_add_strips_text(store, inbox):
     assert texts(store, inbox) == ["a", "n", "b"]
 
 
-@pytest.mark.parametrize("keys", [["escape"], ["space", "enter"], ["enter"]])
-def test_add_cancelled_or_blank_does_nothing(store, inbox, keys):
+@pytest.mark.parametrize("keys", [["escape"], ["space", "enter"], ["space", "escape"], ["enter"]])
+def test_add_blank_does_nothing(store, inbox, keys):
     async def check(app, pilot):
         await pilot.press("l", "a", *keys)
         assert prompts(app, "todos") == ["Today", label("a"), label("b")]
@@ -239,6 +239,16 @@ def test_add_cancelled_or_blank_does_nothing(store, inbox, keys):
 
     run(KansoApp(store), check)
     assert texts(store, inbox) == ["a", "b"]
+
+
+def test_escape_saves_new_todo(store, inbox):
+    async def check(app, pilot):
+        await pilot.press("l", "a", *"new", "escape")
+        assert app.screen is app.screen_stack[0]
+        assert highlighted(app) == label("new")
+
+    run(KansoApp(store), check)
+    assert texts(store, inbox) == ["a", "new", "b"]
 
 
 def test_add_todo_without_lists_does_nothing(store):
@@ -266,8 +276,10 @@ def test_edit_highlighted_todo(store, inbox, key):
     assert texts(store, inbox) == ["a", "c"]
 
 
-@pytest.mark.parametrize("keys", [["escape"], ["ctrl+u", "enter"]])
-def test_edit_cancelled_or_blank_keeps_text(store, inbox, keys):
+@pytest.mark.parametrize("keys", [["escape"], ["enter"], ["ctrl+u", "enter"], ["ctrl+u", "escape"]])
+def test_edit_unchanged_or_blank_keeps_text(store, inbox, keys):
+    stamp = store.todos(inbox.id)[0].modified_at
+
     async def check(app, pilot):
         await pilot.press("l")
         await pilot.press("e", *keys)
@@ -275,6 +287,16 @@ def test_edit_cancelled_or_blank_keeps_text(store, inbox, keys):
 
     run(KansoApp(store), check)
     assert texts(store, inbox) == ["a", "b"]
+    assert store.todos(inbox.id)[0].modified_at == stamp
+
+
+def test_escape_saves_edited_todo(store, inbox):
+    async def check(app, pilot):
+        await pilot.press("l", "e", "end", "z", "escape")
+        assert highlighted(app) == label("az")
+
+    run(KansoApp(store), check)
+    assert texts(store, inbox) == ["az", "b"]
 
 
 def test_edit_without_highlighted_todo_does_nothing(store, inbox):
@@ -350,7 +372,7 @@ def test_leaving_todos_focuses_lists(store, inbox, key):
     run(KansoApp(store), check)
 
 
-def test_escape_in_prompt_cancels_without_leaving_todos(store, inbox):
+def test_escape_in_prompt_stays_in_todos(store, inbox):
     async def check(app, pilot):
         await pilot.press("enter", "e", "escape")
         assert app.screen is app.screen_stack[0]
@@ -524,8 +546,8 @@ def test_add_first_list_then_todo(store):
     assert texts(store, store.lists()[0]) == ["milk"]
 
 
-@pytest.mark.parametrize("keys", [["escape"], ["space", "enter"], ["enter"]])
-def test_add_list_cancelled_or_blank_does_nothing(store, inbox, keys):
+@pytest.mark.parametrize("keys", [["escape"], ["space", "enter"], ["space", "escape"], ["enter"]])
+def test_add_list_blank_does_nothing(store, inbox, keys):
     async def check(app, pilot):
         await pilot.press("a", *keys)
         assert app.screen is app.screen_stack[0]
@@ -552,14 +574,26 @@ def test_edit_highlighted_list(store, inbox):
     assert list_names(store) == ["Inbox", "Job"]
 
 
-@pytest.mark.parametrize("keys", [["escape"], ["ctrl+u", "enter"]])
-def test_edit_list_cancelled_or_blank_keeps_name(store, inbox, keys):
+@pytest.mark.parametrize("keys", [["escape"], ["enter"], ["ctrl+u", "enter"], ["ctrl+u", "escape"]])
+def test_edit_list_unchanged_or_blank_keeps_name(store, inbox, keys):
+    stamp = store.lists()[0].modified_at
+
     async def check(app, pilot):
         await pilot.press("e", *keys)
         assert app.screen is app.screen_stack[0]
 
     run(KansoApp(store), check)
     assert list_names(store) == ["Inbox"]
+    assert store.lists()[0].modified_at == stamp
+
+
+def test_escape_saves_renamed_list(store, inbox):
+    async def check(app, pilot):
+        await pilot.press("e", "end", "2", "escape")
+        assert highlighted_list(app) == "Inbox2"
+
+    run(KansoApp(store), check)
+    assert list_names(store) == ["Inbox2"]
 
 
 def test_edit_list_without_lists_does_nothing(store):
@@ -772,13 +806,26 @@ def test_clearing_labels(store, labelled):
     assert labels_of(store, labelled) == [[], []]
 
 
-def test_edit_labels_cancelled_keeps_them(store, labelled):
+@pytest.mark.parametrize("keys", [["escape"], ["enter"], ["space", "escape"]])
+def test_edit_labels_unchanged_writes_nothing(store, labelled, keys):
+    stamp = store.todos(labelled.id)[0].modified_at
+
     async def check(app, pilot):
-        await pilot.press("l", "number_sign", "ctrl+u", "escape")
+        await pilot.press("l", "number_sign", *keys)
         assert app.screen is app.screen_stack[0]
 
     run(KansoApp(store), check)
     assert labels_of(store, labelled)[0] == ["home", "work"]
+    assert store.todos(labelled.id)[0].modified_at == stamp
+
+
+def test_escape_saves_labels(store, labelled):
+    async def check(app, pilot):
+        await pilot.press("l", "number_sign", "ctrl+u", *"x", "escape")
+        assert app.screen is app.screen_stack[0]
+
+    run(KansoApp(store), check)
+    assert labels_of(store, labelled)[0] == ["x"]
 
 
 def test_invalid_label_is_reported_and_not_saved(store, labelled):

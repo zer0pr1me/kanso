@@ -108,9 +108,9 @@ class LabelSuggester(Suggester):
 
 
 class TextPrompt(ModalScreen[str | None]):
-    """Asks for a line of text; dismisses with it stripped, or `None` if cancelled."""
+    """Asks for a line of text; enter or escape dismisses with it stripped, or `None` if unchanged."""
 
-    BINDINGS = [("escape", "dismiss", "Cancel"), Binding("tab", "complete", show=False)]
+    BINDINGS = [("escape", "save", "Save"), Binding("tab", "complete", show=False)]
     CSS = """
     TextPrompt { align: center middle; }
     TextPrompt Input { width: 60; }
@@ -119,6 +119,7 @@ class TextPrompt(ModalScreen[str | None]):
     def __init__(self, value: str = "", **options):
         """`options` go to the `Input`; the placeholder defaults to "Todo"."""
         super().__init__()
+        self.initial = value.strip()
         self.input = Input(value, **{"placeholder": "Todo", **options})
 
     def compose(self) -> ComposeResult:
@@ -128,8 +129,12 @@ class TextPrompt(ModalScreen[str | None]):
         """Accept the suggestion, if any (right arrow does too)."""
         self.input.action_cursor_right()
 
-    def on_input_submitted(self, event: Input.Submitted):
-        self.dismiss(event.value.strip())
+    def action_save(self):
+        value = self.input.value.strip()
+        self.dismiss(None if value == self.initial else value)
+
+    def on_input_submitted(self):
+        self.action_save()
 
 
 VIM_BINDINGS = [
