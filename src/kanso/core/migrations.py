@@ -10,6 +10,7 @@ Rules: append only, never edit a released migration; transform each row on its o
 sync sends only changed rows; never touch the `meta` table.
 """
 
+import json
 from collections.abc import Callable
 
 from sqlalchemy import Connection, Engine, inspect, text
@@ -26,7 +27,18 @@ def add_todo_repeat_id(rows: Rows) -> Rows:
     return {**rows, "todo": [{**row, "repeat_id": None} for row in rows.get("todo", [])]}
 
 
-MIGRATIONS: list[Callable[[Rows], Rows]] = [add_todo_labels, add_todo_repeat_id]
+def add_field_stamps(rows: Rows) -> Rows:
+    """Stamp every field with the row's `modified_at`, the only stamp rows had."""
+
+    def stamped(row: dict) -> dict:
+        stamps = {field: row["modified_at"] for field in row if field not in {"id", "modified_at"}}
+        return {**row, "stamps": json.dumps(stamps)}
+
+    tables = ("todolist", "repeat", "todo")
+    return {**rows, **{table: [stamped(row) for row in rows.get(table, [])] for table in tables}}
+
+
+MIGRATIONS: list[Callable[[Rows], Rows]] = [add_todo_labels, add_todo_repeat_id, add_field_stamps]
 
 VERSION_KEY = "schema_version"
 

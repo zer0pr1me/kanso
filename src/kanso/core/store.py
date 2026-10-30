@@ -4,18 +4,19 @@ from pathlib import Path
 from uuid import UUID, uuid4, uuid5
 
 from platformdirs import user_data_path
-from sqlalchemy import Engine, event
+from sqlalchemy import Engine, event, inspect
 from sqlmodel import Session, create_engine, func, select
 
 from kanso.core import position
 from kanso.core.clock import Clock
 from kanso.core.migrations import migrate
-from kanso.core.models import Meta, Record, Repeat, Todo, TodoList
+from kanso.core.models import SYNCED_MODELS, UNSTAMPED, Meta, Record, Repeat, Todo, TodoList
 from kanso.core.repeats import RULE_FIELDS, clean_rule, occurs_on
 
 NAME_MAX = 200
 LABEL_MAX = 50
 TODO_FIELDS = {"text", "done", "scheduled_at", "labels"}
+REPEAT_FIELDS = {"text"} | RULE_FIELDS
 
 
 class NotFound(LookupError):
@@ -48,9 +49,15 @@ def connect(path: Path) -> Engine:
     return engine
 
 
-def apply_changes(todo: Todo, changes: dict) -> Todo:
-    if unknown := changes.keys() - TODO_FIELDS:
+def check_fields(changes: dict, allowed: set[str]):
+    if unknown := changes.keys() - allowed:
         raise TypeError(f"Cannot set {', '.join(sorted(unknown))}")
+
+
+def apply_changes(todo: Todo, changes: dict) -> Todo:
+    check_fields(changes, TODO_FIELDS)
+    if "text" in changes:
+        changes = {**changes, "text": clean_text(changes["text"])}
     if "labels" in changes:
         changes = {**changes, "labels": clean_labels(changes["labels"])}
     if "done" in changes and changes["done"] != todo.done:
@@ -87,6 +94,12 @@ def clean_labels(labels: list[str]) -> list[str]:
     return cleaned
 
 
+def changed_fields(record: Record) -> set[str]:
+    """Fields set to a new value since the record was last saved; all of them if it never was."""
+    state = inspect(record)
+    return {a.key for a in state.attrs if not state.persistent or a.history.has_changes()} - UNSTAMPED
+
+
 def position_at(items: list[Record], index: int | None) -> str:
     """Key for inserting at `index` among ordered `items`; `None` (or past the end) appends."""
     index = len(items) if index is None else max(0, min(index, len(items)))
@@ -106,7 +119,7 @@ class Store:
             self.engine.dispose()
             raise
         self.db = Session(self.engine, expire_on_commit=False)
-        stamps = [self.db.exec(select(func.max(m.modified_at))).one() for m in (TodoList, Todo, Repeat)]
+        stamps = [self.db.exec(select(func.max(m.modified_at))).one() for m in SYNCED_MODELS]
         self.clock = Clock(self._node_id(), max(filter(None, stamps), default=None))
 
     def close(self):
@@ -120,22 +133,40 @@ class Store:
         return meta.value
 
     def _save[T: Record](self, *records: T) -> T:
+        """Stamp each record's changed fields with one new stamp and commit; unchanged records aren't written."""
         stamp = self.clock.now()
         for record in records:
-            record.modified_at = stamp
-            self.db.add(record)
+            if changed := changed_fields(record):
+                record.stamps = {**record.stamps, **dict.fromkeys(changed, stamp)}
+                record.modified_at = stamp
+                self.db.add(record)
         self.db.commit()
         return records[0]
 
+    # A record is live unless deleted or in a list that is deleted or missing, which happens
+    # when replicas concurrently delete a list and add to it, or sync delivers a child first.
+
+    def _is_live(self, record: Record | None) -> bool:
+        if not record or record.deleted:
+            return False
+        list_id = getattr(record, "list_id", None)
+        return list_id is None or self._is_live(self.db.get(TodoList, list_id))
+
     def _get[T: Record](self, model: type[T], id: UUID) -> T:
         record = self.db.get(model, id)
-        if not record or record.deleted:
+        if not self._is_live(record):
             raise NotFound(f"{model.__name__} {id} not found")
         return record
 
     def _live[T: Record](self, model: type[T], *where) -> list[T]:
         query = select(model).where(model.deleted == False, *where)  # noqa: E712
+        if hasattr(model, "list_id"):
+            query = query.join(TodoList, TodoList.id == model.list_id).where(TodoList.deleted == False)  # noqa: E712
         return list(self.db.exec(query.order_by(model.position, model.id)).all())
+
+    def _in_list[T: Record](self, model: type[T], list_id: UUID) -> list[T]:
+        self._get(TodoList, list_id)
+        return self._live(model, model.list_id == list_id)
 
     # Lists
 
@@ -151,32 +182,31 @@ class Store:
         return self._save(todo_list)
 
     def delete_list(self, list_id: UUID):
-        records = [self._get(TodoList, list_id), *self.todos(list_id), *self.repeats(list_id)]
-        for record in records:
-            record.deleted = True
-        self._save(*records)
+        """Tombstone it, which also hides its todos and repeats."""
+        todo_list = self._get(TodoList, list_id)
+        todo_list.deleted = True
+        self._save(todo_list)
 
     # Todos
 
     def todos(self, list_id: UUID) -> list[Todo]:
-        self._get(TodoList, list_id)
-        return self._live(Todo, Todo.list_id == list_id)
+        return self._in_list(Todo, list_id)
 
     def labels(self) -> list[str]:
         """Every label used by a live todo, sorted case-insensitively."""
         return sorted({label for todo in self._live(Todo) for label in todo.labels}, key=str.casefold)
 
-    def add_todo(self, list_id: UUID, text: str = "", index: int | None = None, **fields) -> Todo:
+    def add_todo(self, list_id: UUID, text: str, index: int | None = None, **fields) -> Todo:
         """Insert at `index` in the list's order (`None` appends); `fields` as in `update_todo`.
 
         New todos are scheduled for today unless `scheduled_at` says otherwise.
         """
         pos = position_at(self.todos(list_id), index)
-        todo = Todo(list_id=list_id, text=text, position=pos, scheduled_at=date.today())
-        return self._save(apply_changes(todo, fields))
+        todo = Todo(list_id=list_id, position=pos, scheduled_at=date.today())
+        return self._save(apply_changes(todo, {"text": text, **fields}))
 
     def update_todo(self, todo_id: UUID, **changes) -> Todo:
-        """Set any of `text`, `done`, `scheduled_at`, `labels`; toggling `done` sets `completed_at`."""
+        """Set any of `text` (not blank), `done`, `scheduled_at`, `labels`; toggling `done` sets `completed_at`."""
         return self._save(apply_changes(self._get(Todo, todo_id), changes))
 
     def shift_todo(self, todo_id: UUID, days: int) -> Todo:
@@ -199,23 +229,27 @@ class Store:
     # Repeats
 
     def repeats(self, list_id: UUID) -> list[Repeat]:
-        self._get(TodoList, list_id)
-        return self._live(Repeat, Repeat.list_id == list_id)
+        return self._in_list(Repeat, list_id)
 
     def add_repeat(self, list_id: UUID, text: str, kind: str = "days", **rule) -> Repeat:
-        """Append to the list's repeats; `rule` as in `repeats.clean_rule`."""
+        """Append to the list's repeats, spawning today's todo if due; `rule` as in `repeats.clean_rule`."""
         pos = position_at(self.repeats(list_id), None)
-        return self._save(Repeat(list_id=list_id, text=clean_text(text), position=pos, **clean_rule(kind, **rule)))
+        repeat = self._save(Repeat(list_id=list_id, text=clean_text(text), position=pos, **clean_rule(kind, **rule)))
+        self._spawn(repeat, date.today())
+        return repeat
 
-    def update_repeat(self, repeat_id: UUID, text: str | None = None, **rule) -> Repeat:
-        """Set `text` and any rule fields; changing the rule restarts it today."""
+    def update_repeat(self, repeat_id: UUID, **changes) -> Repeat:
+        """Set `text` and any rule fields, spawning today's todo if now due; changing the rule restarts it today."""
+        check_fields(changes, REPEAT_FIELDS)
         repeat = self._get(Repeat, repeat_id)
-        changes = {} if text is None else {"text": clean_text(text)}
+        updates = {"text": clean_text(changes.pop("text"))} if "text" in changes else {}
         current = {field: getattr(repeat, field) for field in RULE_FIELDS}
-        if rule and (new := clean_rule(**{**current, **rule})) != current:
-            changes |= {**new, "start": date.today()}
-        repeat.sqlmodel_update(changes)
-        return self._save(repeat)
+        if (rule := clean_rule(**{**current, **changes})) != current:
+            updates |= {**rule, "start": date.today()}
+        repeat.sqlmodel_update(updates)
+        self._save(repeat)
+        self._spawn(repeat, date.today())
+        return repeat
 
     def delete_repeat(self, repeat_id: UUID):
         """Tombstone it; the todos it spawned stay."""
@@ -228,11 +262,11 @@ class Store:
         unless that occurrence was already spawned, even if since deleted. Occurrence ids
         derive from the repeat and day, so replicas spawning the same one agree on it."""
         day = day or date.today()
-        spawned = []
-        for repeat in self._live(Repeat):
-            id = uuid5(repeat.id, day.isoformat())
-            if occurs_on(repeat, day) and not self.db.get(Todo, id):
-                pos = position_at(self.todos(repeat.list_id), None)
-                todo = Todo(id=id, list_id=repeat.list_id, repeat_id=repeat.id, text=repeat.text, position=pos, scheduled_at=day)
-                spawned.append(self._save(todo))
-        return spawned
+        return [todo for repeat in self._live(Repeat) if (todo := self._spawn(repeat, day))]
+
+    def _spawn(self, repeat: Repeat, day: date) -> Todo | None:
+        id = uuid5(repeat.id, day.isoformat())
+        if not occurs_on(repeat, day) or self.db.get(Todo, id):
+            return None
+        pos = position_at(self.todos(repeat.list_id), None)
+        return self._save(Todo(id=id, list_id=repeat.list_id, repeat_id=repeat.id, text=repeat.text, position=pos, scheduled_at=day))

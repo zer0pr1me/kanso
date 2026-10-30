@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from contextlib import closing
 
@@ -7,11 +8,6 @@ from kanso.core import migrations
 from kanso.core import store as store_module
 from kanso.core.migrations import current_version, upgrade
 from kanso.core.store import Store
-
-
-@pytest.fixture
-def path(tmp_path):
-    return tmp_path / "kanso.db"
 
 
 def sql(path, query: str, *params):
@@ -147,43 +143,46 @@ def test_upgrade_adds_empty_labels_to_todos():
     assert migrations.add_todo_labels({}) == {"todo": []}
 
 
-def test_upgrades_database_from_before_labels(path):
-    store = Store(path)
-    inbox = store.add_list("Inbox")
-    store.add_todo(inbox.id, "a")
-    store.close()
-    sql(path, "ALTER TABLE todo DROP COLUMN labels")
-    sql(path, "UPDATE meta SET value = '0' WHERE key = 'schema_version'")
-    store = Store(path)
-    [todo] = store.todos(inbox.id)
-    assert (todo.text, todo.labels) == ("a", [])
-    store.update_todo(todo.id, labels=["home"])
-    store.close()
-    assert stored_version(path) == str(current_version())
-
-
 def test_upgrade_adds_no_repeat_to_todos():
     rows = {"todolist": [{"id": "l"}], "todo": [{"id": "1", "text": "a"}]}
     assert migrations.add_todo_repeat_id(rows) == {"todolist": [{"id": "l"}], "todo": [{"id": "1", "text": "a", "repeat_id": None}]}
     assert migrations.add_todo_repeat_id({}) == {"todo": []}
 
 
-def test_upgrades_database_from_before_repeats(path):
+def test_upgrade_stamps_every_field_with_modified_at():
+    rows = {
+        "meta": [{"key": "node", "value": "n"}],
+        "todolist": [{"id": "l", "position": "V", "modified_at": "s1", "deleted": 0, "name": "Inbox"}],
+        "todo": [{"id": "t", "modified_at": "s2", "text": "a"}],
+    }
+    upgraded = migrations.add_field_stamps(rows)
+    assert upgraded["meta"] == rows["meta"]
+    assert json.loads(upgraded["todolist"][0]["stamps"]) == {"position": "s1", "deleted": "s1", "name": "s1"}
+    assert json.loads(upgraded["todo"][0].pop("stamps")) == {"text": "s2"}
+    assert upgraded["todo"] == rows["todo"] and upgraded["repeat"] == []
+
+
+def test_upgrades_database_from_schema_0(path):
     store = Store(path)
     inbox = store.add_list("Inbox")
     store.add_todo(inbox.id, "a")
     store.close()
-    # SQLite can't drop a foreign key column, so rebuild the table without it.
+    # Schema 0 had neither labels nor repeats. SQLite can't drop a foreign key column, so rebuild todo.
+    for table in ("todolist", "todo"):
+        sql(path, f"DROP INDEX ix_{table}_modified_at")
+        sql(path, f"ALTER TABLE {table} DROP COLUMN stamps")
     sql(path, "ALTER TABLE todo RENAME TO old")
-    columns = "id, position, modified_at, deleted, list_id, text, done, created_at, scheduled_at, completed_at, labels"
+    columns = "id, position, modified_at, deleted, list_id, text, done, created_at, scheduled_at, completed_at"
     sql(path, f"CREATE TABLE todo AS SELECT {columns} FROM old")
     sql(path, "DROP TABLE old")
     sql(path, "DROP TABLE repeat")
-    sql(path, "UPDATE meta SET value = '1' WHERE key = 'schema_version'")
+    sql(path, "UPDATE meta SET value = '0' WHERE key = 'schema_version'")
     store = Store(path)
     [todo] = store.todos(inbox.id)
-    assert (todo.text, todo.repeat_id) == ("a", None)
+    assert (todo.text, todo.labels, todo.repeat_id) == ("a", [], None)
+    assert set(todo.stamps.values()) == {todo.modified_at} and "text" in todo.stamps
+    store.update_todo(todo.id, labels=["home"])
     store.add_repeat(inbox.id, "b")
-    assert [t.text for t in store.spawn_repeats()] == ["b"]
+    assert [t.text for t in store.todos(inbox.id)] == ["a", "b"]
     store.close()
-    assert stored_version(path) == "2"
+    assert stored_version(path) == str(current_version())

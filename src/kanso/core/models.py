@@ -1,7 +1,8 @@
 """Tables are shaped for replicas that sync later.
 
-Ids are UUIDs so replicas never collide, deletes are tombstones so they can propagate,
-and `modified_at` is a hybrid-logical-clock stamp for last-writer-wins merges.
+Ids are UUIDs so replicas never collide, and deletes are tombstones so they can propagate.
+`stamps` holds a hybrid-logical-clock stamp per field, from the write that last changed it,
+so replicas merge field by field, last writer wins (`merge.py`); `modified_at` is the newest.
 """
 
 from datetime import date
@@ -19,7 +20,8 @@ class Meta(SQLModel, table=True):
 class Record(SQLModel):
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     position: str = Field(index=True)
-    modified_at: str = ""
+    modified_at: str = Field(default="", index=True)
+    stamps: dict[str, str] = Field(default_factory=dict, sa_type=JSON, nullable=False)
     deleted: bool = False
 
 
@@ -48,3 +50,10 @@ class Todo(Record, table=True):
     scheduled_at: date | None = None
     completed_at: date | None = None
     labels: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+
+
+SYNCED_MODELS = (TodoList, Repeat, Todo)
+"""The tables replicas exchange, parents first."""
+
+UNSTAMPED = {"id", "modified_at", "stamps"}
+"""Fields without a stamp of their own: the immutable id, and the stamps themselves."""
