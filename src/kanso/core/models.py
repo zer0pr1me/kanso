@@ -27,8 +27,21 @@ class TodoList(Record, table=True):
     name: str
 
 
+class Repeat(Record, table=True):
+    """Spawns a todo on each day its rule matches; see `repeats.py`."""
+
+    list_id: UUID = Field(foreign_key="todolist.id", index=True)
+    text: str
+    kind: str = "days"
+    interval: int = 1
+    weekdays: list[int] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    monthdays: list[int] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    start: date = Field(default_factory=date.today)
+
+
 class Todo(Record, table=True):
     list_id: UUID = Field(foreign_key="todolist.id", index=True)
+    repeat_id: UUID | None = Field(default=None, foreign_key="repeat.id", index=True)
     text: str = ""
     done: bool = False
     created_at: date = Field(default_factory=date.today)

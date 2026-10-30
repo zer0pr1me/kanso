@@ -159,4 +159,31 @@ def test_upgrades_database_from_before_labels(path):
     assert (todo.text, todo.labels) == ("a", [])
     store.update_todo(todo.id, labels=["home"])
     store.close()
-    assert stored_version(path) == "1"
+    assert stored_version(path) == str(current_version())
+
+
+def test_upgrade_adds_no_repeat_to_todos():
+    rows = {"todolist": [{"id": "l"}], "todo": [{"id": "1", "text": "a"}]}
+    assert migrations.add_todo_repeat_id(rows) == {"todolist": [{"id": "l"}], "todo": [{"id": "1", "text": "a", "repeat_id": None}]}
+    assert migrations.add_todo_repeat_id({}) == {"todo": []}
+
+
+def test_upgrades_database_from_before_repeats(path):
+    store = Store(path)
+    inbox = store.add_list("Inbox")
+    store.add_todo(inbox.id, "a")
+    store.close()
+    # SQLite can't drop a foreign key column, so rebuild the table without it.
+    sql(path, "ALTER TABLE todo RENAME TO old")
+    columns = "id, position, modified_at, deleted, list_id, text, done, created_at, scheduled_at, completed_at, labels"
+    sql(path, f"CREATE TABLE todo AS SELECT {columns} FROM old")
+    sql(path, "DROP TABLE old")
+    sql(path, "DROP TABLE repeat")
+    sql(path, "UPDATE meta SET value = '1' WHERE key = 'schema_version'")
+    store = Store(path)
+    [todo] = store.todos(inbox.id)
+    assert (todo.text, todo.repeat_id) == ("a", None)
+    store.add_repeat(inbox.id, "b")
+    assert [t.text for t in store.spawn_repeats()] == ["b"]
+    store.close()
+    assert stored_version(path) == "2"

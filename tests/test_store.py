@@ -1,11 +1,11 @@
 from datetime import date, timedelta
-from uuid import uuid4
+from uuid import uuid4, uuid5
 
 import pytest
 from sqlmodel import select
 
 from kanso.core import store as store_module
-from kanso.core.models import Todo, TodoList
+from kanso.core.models import Repeat, Todo, TodoList
 from kanso.core.store import NotFound, Store
 
 
@@ -334,3 +334,199 @@ def test_labels_lists_live_labels_sorted(store, todo_list):
     store.add_todo(store.add_list("Gone").id, "d", labels=["gone"])
     store.delete_list(store.lists()[-1].id)
     assert store.labels() == ["errands", "Home", "work"]
+
+
+# Repeats
+
+
+def test_add_repeat_defaults_to_daily_from_today(store, todo_list):
+    repeat = store.add_repeat(todo_list.id, "  Water plants ")
+    assert (repeat.text, repeat.kind, repeat.interval, repeat.weekdays, repeat.monthdays, repeat.start) == (
+        "Water plants",
+        "days",
+        1,
+        [],
+        [],
+        date.today(),
+    )
+    assert store.repeats(todo_list.id) == [repeat]
+
+
+def test_add_repeat_with_rule(store, todo_list):
+    repeat = store.add_repeat(todo_list.id, "a", "weekdays", weekdays=[4, 0])
+    assert (repeat.kind, repeat.weekdays) == ("weekdays", [0, 4])
+
+
+def test_repeats_keep_order_and_are_per_list(store, todo_list):
+    other = store.add_list("Other")
+    for text in "bac":
+        store.add_repeat(todo_list.id, text)
+    store.add_repeat(other.id, "x")
+    assert [r.text for r in store.repeats(todo_list.id)] == ["b", "a", "c"]
+    assert [r.text for r in store.repeats(other.id)] == ["x"]
+
+
+def test_repeats_persist(path):
+    s = Store(path)
+    repeat = s.add_repeat(s.add_list("Inbox").id, "a", "monthdays", monthdays=[1, 15])
+    s.close()
+    s = Store(path)
+    [loaded] = s.repeats(repeat.list_id)
+    assert (loaded.id, loaded.monthdays, loaded.start) == (repeat.id, [1, 15], date.today())
+    s.close()
+
+
+@pytest.mark.parametrize("text", ["", "   "])
+def test_repeat_text_must_not_be_blank(store, todo_list, text):
+    repeat = store.add_repeat(todo_list.id, "a")
+    with pytest.raises(ValueError):
+        store.add_repeat(todo_list.id, text)
+    with pytest.raises(ValueError):
+        store.update_repeat(repeat.id, text=text)
+    assert [r.text for r in store.repeats(todo_list.id)] == ["a"]
+
+
+def test_invalid_rule_is_rejected_unchanged(store, todo_list):
+    repeat = store.add_repeat(todo_list.id, "a", "days", interval=2)
+    with pytest.raises(ValueError):
+        store.add_repeat(todo_list.id, "b", "weekdays")
+    with pytest.raises(ValueError):
+        store.update_repeat(repeat.id, text="b", kind="weekdays")
+    with pytest.raises(TypeError):
+        store.update_repeat(repeat.id, text="b", start=date(2020, 1, 1))
+    with pytest.raises(TypeError):
+        store.add_repeat(todo_list.id, "b", deleted=True)
+    assert [(r.text, r.kind, r.interval) for r in store.repeats(todo_list.id)] == [("a", "days", 2)]
+
+
+def test_update_repeat_text_keeps_rule_and_start(store, todo_list):
+    repeat = store.add_repeat(todo_list.id, "a", "days", interval=3)
+    repeat.start = date(2026, 1, 1)
+    store.update_repeat(repeat.id, text=" b ")
+    [updated] = store.repeats(todo_list.id)
+    assert (updated.text, updated.interval, updated.start) == ("b", 3, date(2026, 1, 1))
+
+
+def test_changing_rule_restarts_it_today(store, todo_list):
+    repeat = store.add_repeat(todo_list.id, "a", "days", interval=3)
+    repeat.start = date(2026, 1, 1)
+    store.update_repeat(repeat.id, interval=3)
+    assert repeat.start == date(2026, 1, 1)
+    store.update_repeat(repeat.id, kind="weekdays", weekdays=[2])
+    assert (repeat.kind, repeat.interval, repeat.weekdays, repeat.start) == ("weekdays", 1, [2], date.today())
+
+
+def test_delete_repeat_tombstones_it_keeping_its_todos(store, todo_list):
+    repeat = store.add_repeat(todo_list.id, "a")
+    store.spawn_repeats()
+    store.delete_repeat(repeat.id)
+    assert store.repeats(todo_list.id) == []
+    assert store.db.get(Repeat, repeat.id).deleted
+    assert texts(store, todo_list.id) == ["a"]
+
+
+def test_delete_list_tombstones_its_repeats(store, todo_list):
+    repeat = store.add_repeat(todo_list.id, "a")
+    store.delete_list(todo_list.id)
+    assert store.db.get(Repeat, repeat.id).deleted
+    assert store.spawn_repeats() == []
+
+
+@pytest.mark.parametrize("op", ["update", "delete"])
+def test_missing_or_deleted_repeat_not_found(store, todo_list, op):
+    repeat = store.add_repeat(todo_list.id, "a")
+    store.delete_repeat(repeat.id)
+    calls = {"update": lambda id: store.update_repeat(id, text="x"), "delete": store.delete_repeat}
+    for id in (repeat.id, uuid4()):
+        with pytest.raises(NotFound):
+            calls[op](id)
+
+
+@pytest.mark.parametrize("op", ["repeats", "add_repeat"])
+def test_repeats_of_missing_list_not_found(store, op):
+    calls = {"repeats": store.repeats, "add_repeat": lambda id: store.add_repeat(id, "a")}
+    with pytest.raises(NotFound):
+        calls[op](uuid4())
+
+
+# Spawning repeats
+
+
+def test_spawn_appends_todo_for_today(store, todo_list):
+    store.add_todo(todo_list.id, "first", scheduled_at=None)
+    repeat = store.add_repeat(todo_list.id, "a")
+    [todo] = store.spawn_repeats()
+    assert texts(store, todo_list.id) == ["first", "a"]
+    assert (todo.repeat_id, todo.scheduled_at, todo.done, todo.labels) == (repeat.id, date.today(), False, [])
+    assert todo.id == uuid5(repeat.id, date.today().isoformat())
+
+
+def test_spawn_only_matching_repeats_on_given_day(store, todo_list):
+    other = store.add_list("Other")
+    day = date.today() + timedelta(days=1)
+    store.add_repeat(todo_list.id, "tomorrow", "weekdays", weekdays=[day.weekday()])
+    store.add_repeat(todo_list.id, "today", "weekdays", weekdays=[date.today().weekday()])
+    store.add_repeat(other.id, "daily")
+    assert sorted((t.text, t.scheduled_at) for t in store.spawn_repeats(day)) == [("daily", day), ("tomorrow", day)]
+    assert texts(store, todo_list.id) == ["tomorrow"]
+    assert texts(store, other.id) == ["daily"]
+
+
+def test_spawn_puts_several_repeats_in_order(store, todo_list):
+    for text in "abc":
+        store.add_repeat(todo_list.id, text)
+    store.spawn_repeats()
+    assert texts(store, todo_list.id) == ["a", "b", "c"]
+
+
+def test_spawn_is_idempotent(store, todo_list):
+    store.add_repeat(todo_list.id, "a")
+    store.spawn_repeats()
+    assert store.spawn_repeats() == []
+    assert texts(store, todo_list.id) == ["a"]
+
+
+def test_spawn_skips_changed_or_deleted_occurrences(store, todo_list):
+    store.add_repeat(todo_list.id, "a")
+    [todo] = store.spawn_repeats()
+    store.shift_todo(todo.id, 1)
+    store.update_todo(todo.id, text="b", done=True)
+    assert store.spawn_repeats() == []
+    store.delete_todo(todo.id)
+    assert store.spawn_repeats() == []
+    assert texts(store, todo_list.id) == []
+
+
+def test_spawn_again_on_the_next_day(store, todo_list):
+    store.add_repeat(todo_list.id, "a")
+    store.spawn_repeats()
+    tomorrow = date.today() + timedelta(days=1)
+    [todo] = store.spawn_repeats(tomorrow)
+    assert todo.scheduled_at == tomorrow
+    assert texts(store, todo_list.id) == ["a", "a"]
+
+
+def test_spawn_ignores_deleted_repeats(store, todo_list):
+    repeat = store.add_repeat(todo_list.id, "a")
+    store.delete_repeat(repeat.id)
+    assert store.spawn_repeats() == []
+
+
+def test_spawned_todo_persists_its_repeat(path):
+    s = Store(path)
+    repeat = s.add_repeat(s.add_list("Inbox").id, "a")
+    s.spawn_repeats()
+    s.close()
+    s = Store(path)
+    assert [t.repeat_id for t in s.todos(repeat.list_id)] == [repeat.id]
+    assert s.spawn_repeats() == []
+    s.close()
+
+
+def test_clock_resumes_after_repeat_stamps(path):
+    s = Store(path)
+    repeat = s.add_repeat(s.add_list("Inbox").id, "a")
+    s.close()
+    s = Store(path)
+    assert s.clock.now() > repeat.modified_at
+    s.close()

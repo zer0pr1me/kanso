@@ -2,10 +2,22 @@ import asyncio
 from datetime import date, timedelta
 
 import pytest
-from textual.widgets import Input, OptionList
+from textual.widgets import ContentSwitcher, Input, OptionList, RadioSet, SelectionList
 
 from kanso.core.store import NAME_MAX, Store
-from kanso.tui.app import LABEL_STYLE, KansoApp, LabelSuggester, human_date, section_title, sections, todo_label
+from kanso.tui import app as app_module
+from kanso.tui.app import (
+    LABEL_STYLE,
+    KansoApp,
+    LabelSuggester,
+    RepeatDialog,
+    describe_rule,
+    human_date,
+    repeat_label,
+    section_title,
+    sections,
+    todo_label,
+)
 
 
 @pytest.fixture
@@ -800,3 +812,343 @@ def test_blank_todo_text_still_ignored(store, labelled):
 
     run(KansoApp(store), check)
     assert texts(store, labelled) == ["a", "b"]
+
+
+# Repeats
+
+
+def test_describe_rule(store):
+    inbox = store.add_list("Inbox")
+    rules = [
+        {"kind": "days"},
+        {"kind": "days", "interval": 3},
+        {"kind": "weekdays", "weekdays": [4, 0, 2]},
+        {"kind": "monthdays", "monthdays": [15, 1]},
+    ]
+    described = [describe_rule(store.add_repeat(inbox.id, "a", **rule)) for rule in rules]
+    assert described == ["Daily", "Every 3 days", "Mon, Wed, Fri", "Monthly on 1, 15"]
+
+
+def test_repeat_label_is_plain_text_with_muted_rule(store):
+    content = repeat_label(store.add_repeat(store.add_list("Inbox").id, "[b]Water"))
+    assert str(content) == "[b]Water  Daily"
+    assert [(content.plain[s.start : s.end], s.style) for s in content.spans] == [("  Daily", "$text-muted")]
+
+
+def test_todo_label_marks_spawned_todos(store):
+    inbox = store.add_list("Inbox")
+    store.add_repeat(inbox.id, "Water")
+    [todo] = store.spawn_repeats()
+    assert str(todo_label(todo)) == "[ ] Water ↻"
+
+
+@pytest.fixture
+def repeating(store):
+    """Inbox with todo "a" and daily repeats "x" and "y", not spawned yet."""
+    todo_list = store.add_list("Inbox")
+    store.add_todo(todo_list.id, "a")
+    for text in "xy":
+        store.add_repeat(todo_list.id, text)
+    return todo_list
+
+
+def pane(app) -> str:
+    return app.query_one("#panes", ContentSwitcher).current
+
+
+def highlighted_repeat(app):
+    widget = app.query_one("#repeats", OptionList)
+    return str(widget.get_option_at_index(widget.highlighted).prompt)
+
+
+def repeats_of(store, todo_list):
+    return [(r.text, describe_rule(r)) for r in store.repeats(todo_list.id)]
+
+
+def test_mount_spawns_todays_repeats(store, repeating):
+    async def check(app, pilot):
+        assert prompts(app, "todos") == ["Today", label("a"), label("x ↻"), label("y ↻")]
+
+    run(KansoApp(store), check)
+
+
+def test_r_toggles_panes_keeping_focus_side(store, repeating):
+    async def check(app, pilot):
+        await pilot.press("r")
+        assert pane(app) == "repeats" and app.focused.id == "lists"
+        assert prompts(app, "repeats") == ["x  Daily", "y  Daily"]
+        await pilot.press("l")
+        assert app.focused.id == "repeats" and highlighted_repeat(app) == "x  Daily"
+        await pilot.press("r")
+        assert pane(app) == "todos" and app.focused.id == "todos"
+        await pilot.press("r", "h")
+        assert pane(app) == "repeats" and app.focused.id == "lists"
+
+    run(KansoApp(store), check)
+
+
+def test_highlighting_a_list_shows_its_repeats(store, repeating):
+    other = store.add_list("Other")
+    store.add_repeat(other.id, "z", kind="days", interval=2)
+
+    async def check(app, pilot):
+        await pilot.press("r", "j")
+        assert prompts(app, "repeats") == ["z  Every 2 days"]
+
+    run(KansoApp(store), check)
+
+
+@pytest.mark.parametrize("key", ["space", "number_sign", "full_stop", "comma"])
+def test_todo_actions_disabled_while_repeats_shown(store, repeating, key):
+    async def check(app, pilot):
+        await pilot.press("r", "l", key)
+        assert app.screen is app.screen_stack[0]
+        assert not app.check_action("toggle_todo", ())
+        await pilot.press("r")
+        assert app.check_action("toggle_todo", ())
+
+    run(KansoApp(store), check)
+    assert [(t.done, t.scheduled_at) for t in store.todos(repeating.id)] == [(False, date.today())] * 3
+
+
+async def open_dialog(pilot, *keys: str) -> RepeatDialog:
+    await pilot.press("r", "l", *keys)
+    assert isinstance(pilot.app.screen, RepeatDialog)
+    return pilot.app.screen
+
+
+async def choose_kind(pilot, index: int):
+    """From the text field, first focusing the kinds, pick the one at `index` and move to its field."""
+    await pilot.press("tab", *["down"] * index, "enter", "tab")
+
+
+def test_add_daily_repeat_spawns_todays_todo(store, repeating):
+    async def check(app, pilot):
+        await open_dialog(pilot, "a")
+        await type_in_prompt(pilot, " Water ")
+        assert app.screen is app.screen_stack[0]
+        assert prompts(app, "repeats") == ["x  Daily", "y  Daily", "Water  Daily"]
+        assert highlighted_repeat(app) == "Water  Daily" and app.focused.id == "repeats"
+        assert prompts(app, "todos")[-1] == label("Water ↻")
+
+    run(KansoApp(store), check)
+    assert repeats_of(store, repeating)[-1] == ("Water", "Daily")
+
+
+def test_add_every_n_days_repeat(store, repeating):
+    async def check(app, pilot):
+        await open_dialog(pilot, "a")
+        await pilot.press(*"Water")
+        await choose_kind(pilot, 1)
+        assert app.focused.id == "days"
+        await type_in_prompt(pilot, "3", clear=True)
+
+    run(KansoApp(store), check)
+    assert repeats_of(store, repeating)[-1] == ("Water", "Every 3 days")
+
+
+def test_add_weekdays_repeat_saved_with_ctrl_s(store, repeating):
+    async def check(app, pilot):
+        await open_dialog(pilot, "a")
+        await pilot.press(*"Gym")
+        await choose_kind(pilot, 2)
+        assert isinstance(app.focused, SelectionList)
+        await pilot.press("space", "down", "down", "space", "ctrl+s")
+        assert app.screen is app.screen_stack[0]
+
+    run(KansoApp(store), check)
+    assert repeats_of(store, repeating)[-1] == ("Gym", "Mon, Wed")
+
+
+def test_add_monthdays_repeat(store, repeating):
+    async def check(app, pilot):
+        await open_dialog(pilot, "a")
+        await pilot.press(*"Rent")
+        await choose_kind(pilot, 3)
+        await type_in_prompt(pilot, "15 x1")
+
+    run(KansoApp(store), check)
+    assert repeats_of(store, repeating)[-1] == ("Rent", "Monthly on 1, 15")
+
+
+def test_dialog_shows_only_the_chosen_kinds_field(store, repeating):
+    async def check(app, pilot):
+        dialog = await open_dialog(pilot, "a")
+        assert dialog.fields.current is None
+        for field in ["days", "weekdays", "monthdays", None]:
+            await pilot.press("tab", "down", "enter", "shift+tab")
+            assert dialog.fields.current == field
+
+    run(KansoApp(store), check)
+
+
+@pytest.mark.parametrize(
+    "index, value, error",
+    [(0, "", "blank"), (1, "0", "Interval"), (2, None, "weekdays"), (3, "", "days of month"), (3, "32", "1-31")],
+)
+def test_invalid_repeat_is_reported_and_dialog_stays(store, repeating, index, value, error):
+    async def check(app, pilot):
+        dialog = await open_dialog(pilot, "a")
+        await pilot.press(*("Water" if error != "blank" else ""))
+        await choose_kind(pilot, index)
+        if value is not None:
+            await pilot.press("ctrl+u", *value)
+        await pilot.press("ctrl+s")
+        assert app.screen is dialog
+        [notification] = app._notifications
+        assert notification.severity == "error" and error in notification.message
+
+    run(KansoApp(store), check)
+    assert len(store.repeats(repeating.id)) == 2
+
+
+def test_add_repeat_cancelled(store, repeating):
+    async def check(app, pilot):
+        await open_dialog(pilot, "a")
+        await pilot.press(*"Water", "escape")
+        assert app.screen is app.screen_stack[0] and app.focused.id == "repeats"
+
+    run(KansoApp(store), check)
+    assert len(store.repeats(repeating.id)) == 2
+
+
+def test_app_keys_ignored_inside_dialog(store, repeating):
+    async def check(app, pilot):
+        dialog = await open_dialog(pilot, "a")
+        await pilot.press("tab", "a", "e", "d", "r", "h", "l")
+        assert app.screen is dialog and len(app.screen_stack) == 2
+        assert pane(app) == "repeats"
+
+    run(KansoApp(store), check)
+    assert len(store.repeats(repeating.id)) == 2
+
+
+@pytest.mark.parametrize("key", ["e", "enter"])
+def test_edit_repeat_prefilled_and_saved(store, repeating, key):
+    store.update_repeat(store.repeats(repeating.id)[1].id, kind="weekdays", weekdays=[1, 3])
+
+    async def check(app, pilot):
+        dialog = await open_dialog(pilot, "j", key)
+        assert dialog.text.value == "y" and dialog.kind() == "weekdays"
+        assert dialog.fields.current == "weekdays" and dialog.weekdays.selected == [1, 3]
+        await pilot.press("tab", "tab", "down", "down", "down", "space", "shift+tab", "shift+tab")
+        await type_in_prompt(pilot, "z", clear=True)
+        assert highlighted_repeat(app) == "z  Tue"
+
+    run(KansoApp(store), check)
+    assert repeats_of(store, repeating) == [("x", "Daily"), ("z", "Tue")]
+
+
+def test_edit_prefills_every_n_and_monthdays(store, repeating):
+    x, y = store.repeats(repeating.id)
+    store.update_repeat(x.id, interval=4)
+    store.update_repeat(y.id, kind="monthdays", monthdays=[2, 20])
+
+    async def check(app, pilot):
+        dialog = await open_dialog(pilot, "e")
+        assert (dialog.kind(), dialog.fields.current, dialog.interval.value) == ("days", "days", "4")
+        await pilot.press("escape", "j", "e")
+        dialog = app.screen
+        assert (dialog.kind(), dialog.monthdays.value) == ("monthdays", "2 20")
+
+    run(KansoApp(store), check)
+
+
+def test_new_repeat_dialog_defaults(store, repeating):
+    async def check(app, pilot):
+        dialog = await open_dialog(pilot, "a")
+        assert (dialog.text.value, dialog.kind(), dialog.interval.value) == ("", "daily", "2")
+        assert dialog.weekdays.selected == [] and dialog.monthdays.value == ""
+
+    run(KansoApp(store), check)
+
+
+def test_edit_repeat_rule_spawns_if_now_due(store, repeating):
+    tomorrow = (date.today() + timedelta(days=1)).weekday()
+    x = store.repeats(repeating.id)[0]
+    store.update_repeat(x.id, kind="weekdays", weekdays=[tomorrow])
+
+    async def check(app, pilot):
+        assert prompts(app, "todos") == ["Today", label("a"), label("y ↻")]
+        await open_dialog(pilot, "e")
+        await choose_kind(pilot, 0)
+        await pilot.press("ctrl+s")
+        assert prompts(app, "todos") == ["Today", label("a"), label("y ↻"), label("x ↻")]
+
+    run(KansoApp(store), check)
+
+
+def test_edit_and_delete_need_highlighted_repeat(store, repeating):
+    async def check(app, pilot):
+        await pilot.press("r")
+        app.query_one("#repeats").focus()
+        await pilot.press("e", "d")
+        assert app.screen is app.screen_stack[0]
+
+    run(KansoApp(store), check)
+    assert len(store.repeats(repeating.id)) == 2
+
+
+@pytest.mark.parametrize("start, next_highlight", [(0, "y"), (1, "x")])
+def test_delete_repeat_keeps_its_todos(store, repeating, start, next_highlight):
+    async def check(app, pilot):
+        await pilot.press("r", "l", *["j"] * start, "d")
+        assert prompts(app, "repeats") == [f"{next_highlight}  Daily"]
+        assert highlighted_repeat(app) == f"{next_highlight}  Daily"
+
+    run(KansoApp(store), check)
+    assert texts(store, repeating) == ["a", "x", "y"]
+
+
+def test_delete_last_repeat(store):
+    todo_list = store.add_list("Inbox")
+    store.add_repeat(todo_list.id, "x")
+
+    async def check(app, pilot):
+        await pilot.press("r", "l", "d")
+        assert prompts(app, "repeats") == []
+
+    run(KansoApp(store), check)
+
+
+def test_add_repeat_without_lists_does_nothing(store):
+    async def check(app, pilot):
+        await pilot.press("r", "l", "a")
+        assert app.screen is app.screen_stack[0]
+
+    run(KansoApp(store), check)
+
+
+def tomorrow_date(monkeypatch):
+    tomorrow = date.today() + timedelta(days=1)
+
+    class Tomorrow(date):
+        @classmethod
+        def today(cls):
+            return tomorrow
+
+    monkeypatch.setattr(app_module, "date", Tomorrow)
+    return tomorrow
+
+
+def test_day_change_spawns_and_redraws_keeping_highlight(store, repeating, monkeypatch):
+    async def check(app, pilot):
+        await pilot.press("l", "j")
+        app.check_day()
+        assert prompts(app, "todos") == ["Today", label("a"), label("x ↻"), label("y ↻")]
+        tomorrow_date(monkeypatch)
+        app.check_day()
+        assert prompts(app, "todos") == ["Yesterday", label("a"), label("x ↻"), label("y ↻"), "Today", label("x ↻"), label("y ↻")]
+        assert app.query_one("#todos", OptionList).highlighted == 2
+
+    run(KansoApp(store), check)
+    assert len(store.todos(repeating.id)) == 5
+
+
+def test_day_change_without_lists(store, monkeypatch):
+    async def check(app, pilot):
+        tomorrow_date(monkeypatch)
+        app.check_day()
+        assert prompts(app, "todos") == []
+
+    run(KansoApp(store), check)

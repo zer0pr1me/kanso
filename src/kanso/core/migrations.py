@@ -18,12 +18,15 @@ from sqlmodel import SQLModel
 type Rows = dict[str, list[dict]]
 
 
-
 def add_todo_labels(rows: Rows) -> Rows:
     return {**rows, "todo": [{**row, "labels": "[]"} for row in rows.get("todo", [])]}
 
 
-MIGRATIONS: list[Callable[[Rows], Rows]] = [add_todo_labels]
+def add_todo_repeat_id(rows: Rows) -> Rows:
+    return {**rows, "todo": [{**row, "repeat_id": None} for row in rows.get("todo", [])]}
+
+
+MIGRATIONS: list[Callable[[Rows], Rows]] = [add_todo_labels, add_todo_repeat_id]
 
 VERSION_KEY = "schema_version"
 

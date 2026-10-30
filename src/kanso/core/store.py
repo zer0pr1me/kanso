@@ -1,7 +1,7 @@
 import os
 from datetime import date, timedelta
 from pathlib import Path
-from uuid import UUID, uuid4
+from uuid import UUID, uuid4, uuid5
 
 from platformdirs import user_data_path
 from sqlalchemy import Engine, event
@@ -10,7 +10,8 @@ from sqlmodel import Session, create_engine, func, select
 from kanso.core import position
 from kanso.core.clock import Clock
 from kanso.core.migrations import migrate
-from kanso.core.models import Meta, Record, Todo, TodoList
+from kanso.core.models import Meta, Record, Repeat, Todo, TodoList
+from kanso.core.repeats import RULE_FIELDS, clean_rule, occurs_on
 
 NAME_MAX = 200
 LABEL_MAX = 50
@@ -65,6 +66,13 @@ def clean_name(name: str) -> str:
     return name
 
 
+def clean_text(text: str) -> str:
+    text = text.strip()
+    if not text:
+        raise ValueError("Text must not be blank")
+    return text
+
+
 def clean_labels(labels: list[str]) -> list[str]:
     """Stripped of whitespace and a leading `#`, blanks and repeats dropped, in order."""
     if isinstance(labels, str):
@@ -98,7 +106,7 @@ class Store:
             self.engine.dispose()
             raise
         self.db = Session(self.engine, expire_on_commit=False)
-        stamps = [self.db.exec(select(func.max(m.modified_at))).one() for m in (TodoList, Todo)]
+        stamps = [self.db.exec(select(func.max(m.modified_at))).one() for m in (TodoList, Todo, Repeat)]
         self.clock = Clock(self._node_id(), max(filter(None, stamps), default=None))
 
     def close(self):
@@ -143,7 +151,7 @@ class Store:
         return self._save(todo_list)
 
     def delete_list(self, list_id: UUID):
-        records = [self._get(TodoList, list_id), *self.todos(list_id)]
+        records = [self._get(TodoList, list_id), *self.todos(list_id), *self.repeats(list_id)]
         for record in records:
             record.deleted = True
         self._save(*records)
@@ -187,3 +195,44 @@ class Store:
         todo = self._get(Todo, todo_id)
         todo.deleted = True
         self._save(todo)
+
+    # Repeats
+
+    def repeats(self, list_id: UUID) -> list[Repeat]:
+        self._get(TodoList, list_id)
+        return self._live(Repeat, Repeat.list_id == list_id)
+
+    def add_repeat(self, list_id: UUID, text: str, kind: str = "days", **rule) -> Repeat:
+        """Append to the list's repeats; `rule` as in `repeats.clean_rule`."""
+        pos = position_at(self.repeats(list_id), None)
+        return self._save(Repeat(list_id=list_id, text=clean_text(text), position=pos, **clean_rule(kind, **rule)))
+
+    def update_repeat(self, repeat_id: UUID, text: str | None = None, **rule) -> Repeat:
+        """Set `text` and any rule fields; changing the rule restarts it today."""
+        repeat = self._get(Repeat, repeat_id)
+        changes = {} if text is None else {"text": clean_text(text)}
+        current = {field: getattr(repeat, field) for field in RULE_FIELDS}
+        if rule and (new := clean_rule(**{**current, **rule})) != current:
+            changes |= {**new, "start": date.today()}
+        repeat.sqlmodel_update(changes)
+        return self._save(repeat)
+
+    def delete_repeat(self, repeat_id: UUID):
+        """Tombstone it; the todos it spawned stay."""
+        repeat = self._get(Repeat, repeat_id)
+        repeat.deleted = True
+        self._save(repeat)
+
+    def spawn_repeats(self, day: date | None = None) -> list[Todo]:
+        """Add the todo of each repeat matching `day` (default today), appended to its list,
+        unless that occurrence was already spawned, even if since deleted. Occurrence ids
+        derive from the repeat and day, so replicas spawning the same one agree on it."""
+        day = day or date.today()
+        spawned = []
+        for repeat in self._live(Repeat):
+            id = uuid5(repeat.id, day.isoformat())
+            if occurs_on(repeat, day) and not self.db.get(Todo, id):
+                pos = position_at(self.todos(repeat.list_id), None)
+                todo = Todo(id=id, list_id=repeat.list_id, repeat_id=repeat.id, text=repeat.text, position=pos, scheduled_at=day)
+                spawned.append(self._save(todo))
+        return spawned

@@ -1,18 +1,29 @@
+import calendar
 from datetime import date
 from itertools import groupby
 from uuid import UUID
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal
+from textual.containers import Horizontal, Vertical
 from textual.content import Content
 from textual.screen import ModalScreen
 from textual.suggester import Suggester
-from textual.widgets import Footer, Header, Input, OptionList
+from textual.widgets import (
+    ContentSwitcher,
+    Footer,
+    Header,
+    Input,
+    OptionList,
+    RadioButton,
+    RadioSet,
+    SelectionList,
+)
 from textual.widgets.option_list import Option
 
-from kanso.core.models import Record, Todo, TodoList
-from kanso.core.store import NAME_MAX, Store
+from kanso.core.models import Record, Repeat, Todo, TodoList
+from kanso.core.repeats import clean_rule
+from kanso.core.store import NAME_MAX, Store, clean_text
 
 
 def human_date(day: date, today: date | None = None) -> str:
@@ -37,9 +48,25 @@ LABEL_STYLE = "bold $text-accent on $accent-muted"
 
 
 def todo_label(todo: Todo) -> Content:
-    """Checkbox and text, then each label as a `#label` chip, as plain text."""
+    """Checkbox and text, ↻ if spawned by a repeat, then each label as a `#label` chip, as plain text."""
     chips = [part for label in todo.labels for part in (" ", (f" #{label} ", LABEL_STYLE))]
-    return Content.assemble(f"{'[x]' if todo.done else '[ ]'} {todo.text}", *chips)
+    repeat = " ↻" if todo.repeat_id else ""
+    return Content.assemble(f"{'[x]' if todo.done else '[ ]'} {todo.text}{repeat}", *chips)
+
+
+def describe_rule(repeat: Repeat) -> str:
+    match repeat.kind:
+        case "days":
+            return "Daily" if repeat.interval == 1 else f"Every {repeat.interval} days"
+        case "weekdays":
+            return ", ".join(calendar.day_abbr[d] for d in repeat.weekdays)
+        case _:
+            return "Monthly on " + ", ".join(map(str, repeat.monthdays))
+
+
+def repeat_label(repeat: Repeat) -> Content:
+    """Text, then the rule muted, as plain text."""
+    return Content.assemble(repeat.text, (f"  {describe_rule(repeat)}", "$text-muted"))
 
 
 def section_title(day: date | None) -> str:
@@ -55,6 +82,12 @@ def sections(todos: list[Todo]) -> list[tuple[date | None, list[Todo]]]:
 
 def index_of(records: list[Record], record: Record) -> int:
     return next(i for i, r in enumerate(records) if r.id == record.id)
+
+
+def successor(records: list[Record], record: Record) -> Record | None:
+    """What takes `record`'s place once it's removed: the next one, else the previous one."""
+    rest = [r for r in records if r.id != record.id]
+    return rest[min(index_of(records, record), len(rest) - 1)] if rest else None
 
 
 class LabelSuggester(Suggester):
@@ -98,6 +131,74 @@ class TextPrompt(ModalScreen[str | None]):
         self.dismiss(event.value.strip())
 
 
+REPEAT_KINDS = {"daily": "Daily", "days": "Every N days", "weekdays": "Weekdays", "monthdays": "Days of month"}
+
+
+class RepeatDialog(ModalScreen[tuple[str, dict] | None]):
+    """Asks for a repeat's text and rule, showing only the chosen kind's field.
+
+    Enter in a text field or ctrl+s saves: dismisses with the text and rule validated, or
+    reports what's invalid and stays open. Escape dismisses with `None`.
+    """
+
+    BINDINGS = [("escape", "dismiss", "Cancel"), ("ctrl+s", "save", "Save")]
+    CSS = """
+    RepeatDialog { align: center middle; }
+    RepeatDialog > Vertical { width: 60; height: auto; border: round $accent; background: $surface; }
+    RepeatDialog ContentSwitcher, RepeatDialog SelectionList { height: auto; }
+    """
+
+    def __init__(self, repeat: Repeat | None = None):
+        super().__init__()
+        r = repeat or Repeat(text="", position="")
+        kind = "daily" if r.kind == "days" and r.interval == 1 else r.kind
+        self.text = Input(r.text, placeholder="Repeating todo")
+        self.kinds = RadioSet(*(RadioButton(label, kind == k, id=f"kind-{k}") for k, label in REPEAT_KINDS.items()))
+        self.interval = Input(str(max(r.interval, 2)), placeholder="Days", restrict=r"[0-9]*", id="days")
+        days = enumerate(calendar.day_abbr)
+        self.weekdays = SelectionList(*((name, d, d in r.weekdays) for d, name in days), id="weekdays")
+        monthdays = " ".join(map(str, r.monthdays))
+        self.monthdays = Input(monthdays, placeholder="Days of month, e.g. 1 15", restrict=r"[0-9 ]*", id="monthdays")
+        self.fields = ContentSwitcher(self.interval, self.weekdays, self.monthdays, initial=self.field_for(kind))
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield self.text
+            yield self.kinds
+            yield self.fields
+
+    @staticmethod
+    def field_for(kind: str) -> str | None:
+        return None if kind == "daily" else kind
+
+    def kind(self) -> str:
+        return self.kinds.pressed_button.id.removeprefix("kind-")
+
+    def rule(self) -> dict:
+        match self.kind():
+            case "daily":
+                return {"kind": "days"}
+            case "days":
+                return {"kind": "days", "interval": int(self.interval.value or 0)}
+            case "weekdays":
+                return {"kind": "weekdays", "weekdays": list(self.weekdays.selected)}
+            case _:
+                return {"kind": "monthdays", "monthdays": [int(d) for d in self.monthdays.value.split()]}
+
+    def on_radio_set_changed(self):
+        self.fields.current = self.field_for(self.kind())
+
+    def on_input_submitted(self, event: Input.Submitted):
+        event.stop()
+        self.action_save()
+
+    def action_save(self):
+        try:
+            self.dismiss((clean_text(self.text.value), clean_rule(**self.rule())))
+        except ValueError as error:
+            self.notify(str(error), severity="error")
+
+
 class VimOptionList(OptionList):
     BINDINGS = [
         Binding("j", "cursor_down", show=False),
@@ -111,7 +212,7 @@ class KansoApp(App):
     TITLE = "kanso"
     CSS = """
     #lists { width: 30; }
-    #todos { width: 1fr; }
+    #panes { width: 1fr; }
     #todos > .option-list--option-disabled { color: $text-accent; text-style: bold; }
     """
     BINDINGS = [
@@ -119,12 +220,15 @@ class KansoApp(App):
         ("e", "edit", "Edit"),
         Binding("space", "toggle_todo", "Done"),
         Binding("number_sign", "edit_labels", "Labels", key_display="#"),
-        ("d", "delete_todo", "Delete"),
+        ("d", "delete", "Delete"),
         Binding("full_stop", "shift_date(1)", "+1 day", key_display="."),
         Binding("comma", "shift_date(-1)", "-1 day", key_display=","),
-        Binding("right,l", "focus_todos", "Todos", show=False),
+        ("r", "toggle_repeats", "Todos/Repeats"),
+        Binding("right,l", "focus_pane", "Todos", show=False),
         Binding("left,h,escape", "focus_lists", "Lists", show=False),
     ]
+    TODO_ACTIONS = {"toggle_todo", "edit_labels", "shift_date"}
+    PANE_ACTIONS = TODO_ACTIONS | {"add", "edit", "delete", "toggle_repeats", "focus_pane", "focus_lists"}
 
     def __init__(self, store: Store):
         super().__init__()
@@ -132,16 +236,37 @@ class KansoApp(App):
         self.list_id: UUID | None = None
         self.lists: list[TodoList] = []
         self.todos: list[Todo] = []
+        self.repeats: list[Repeat] = []
+        self.day = date.today()
 
     def compose(self) -> ComposeResult:
         yield Header()
         with Horizontal():
             yield VimOptionList(id="lists")
-            yield VimOptionList(id="todos")
+            with ContentSwitcher(id="panes", initial="todos"):
+                yield VimOptionList(id="todos")
+                yield VimOptionList(id="repeats")
         yield Footer()
 
     def on_mount(self):
+        self.store.spawn_repeats(self.day)
         self.show_lists()
+        self.set_interval(60, self.check_day)
+
+    def check_day(self):
+        """Once the date changes, spawn the new day's repeats and redraw the dated sections."""
+        if date.today() == self.day:
+            return
+        self.day = date.today()
+        self.store.spawn_repeats(self.day)
+        if self.list_id:
+            self.show_todos(self.shown(self.query_one("#todos", OptionList), self.todos))
+
+    def check_action(self, action: str, parameters: tuple) -> bool:
+        """Pane actions only from the main screen, todo actions only while todos are shown."""
+        if action in self.PANE_ACTIONS and self.screen is not self.screen_stack[0]:
+            return False
+        return not (action in self.TODO_ACTIONS and self.showing_repeats())
 
     def show_lists(self, highlight: TodoList | None = None):
         """Reload the lists, highlighting `highlight`, else the first one."""
@@ -163,30 +288,62 @@ class KansoApp(App):
         if highlight:
             widget.highlighted = widget.get_option_index(str(highlight.id))
 
+    def show_repeats(self, highlight: Repeat | None = None):
+        """Reload the repeats, highlighting `highlight` if given."""
+        self.repeats = self.store.repeats(self.list_id)
+        widget = self.query_one("#repeats", OptionList)
+        widget.clear_options()
+        widget.add_options(Option(repeat_label(r), str(r.id)) for r in self.repeats)
+        if highlight:
+            widget.highlighted = index_of(self.repeats, highlight)
+
+    @staticmethod
+    def shown[T: Record](widget: OptionList, records: list[T]) -> T | None:
+        option = widget.highlighted_option
+        return next((r for r in records if option and str(r.id) == option.id), None)
+
     def highlighted_todo(self) -> Todo | None:
         """The todo actions apply to: only while the todos pane is focused."""
         widget = self.query_one("#todos", OptionList)
-        option = widget.highlighted_option
-        if not (option and option.id and widget.has_focus):
-            return None
-        return next(t for t in self.todos if str(t.id) == option.id)
+        return self.shown(widget, self.todos) if widget.has_focus else None
+
+    def highlighted_repeat(self) -> Repeat | None:
+        """The repeat actions apply to: only while the repeats pane is focused."""
+        widget = self.query_one("#repeats", OptionList)
+        return self.shown(widget, self.repeats) if widget.has_focus else None
+
+    def showing_repeats(self) -> bool:
+        return self.query_one("#panes", ContentSwitcher).current == "repeats"
 
     def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted):
         if event.option_list.id == "lists":
             self.list_id = UUID(event.option.id)
             self.show_todos()
+            self.show_repeats()
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected):
         if event.option_list.id == "lists":
-            self.action_focus_todos()
+            self.action_focus_pane()
+        elif event.option_list.id == "repeats":
+            self.edit_repeat()
         else:
             self.edit_todo()
 
-    def action_focus_todos(self):
-        todos = self.query_one("#todos", OptionList)
-        if todos.highlighted is None:
-            todos.action_first()
-        todos.focus()
+    def action_focus_pane(self):
+        """Focus the shown pane, highlighting its first item if none is."""
+        pane = self.query_one("#panes", ContentSwitcher)
+        widget = pane.query_one(f"#{pane.current}", OptionList)
+        if widget.highlighted is None:
+            widget.action_first()
+        widget.focus()
+
+    def action_toggle_repeats(self):
+        """Switch the right pane between todos and repeats, keeping focus on that side."""
+        pane = self.query_one("#panes", ContentSwitcher)
+        pane.current = "todos" if self.showing_repeats() else "repeats"
+        if not self.lists_focused():
+            self.action_focus_pane()
+        self.refresh_bindings()
 
     def action_focus_lists(self):
         self.query_one("#lists").focus()
@@ -195,10 +352,23 @@ class KansoApp(App):
         return self.query_one("#lists").has_focus
 
     def action_add(self):
-        self.add_list() if self.lists_focused() else self.add_todo()
+        if self.lists_focused():
+            self.add_list()
+        elif self.showing_repeats():
+            self.add_repeat()
+        else:
+            self.add_todo()
 
     def action_edit(self):
-        self.edit_list() if self.lists_focused() else self.edit_todo()
+        if self.lists_focused():
+            self.edit_list()
+        elif self.showing_repeats():
+            self.edit_repeat()
+        else:
+            self.edit_todo()
+
+    def action_delete(self):
+        self.delete_repeat() if self.showing_repeats() else self.delete_todo()
 
     def list_prompt(self, value: str = "") -> TextPrompt:
         return TextPrompt(value, placeholder="List", max_length=NAME_MAX)
@@ -268,19 +438,55 @@ class KansoApp(App):
         suggester = LabelSuggester(self.store.labels())
         self.push_screen(TextPrompt(value, placeholder="Labels", suggester=suggester, select_on_focus=False), edit)
 
+    def add_repeat(self):
+        """Append to the list's repeats, spawning its todo if due today."""
+        if not self.list_id:
+            return
+
+        def add(result: tuple[str, dict] | None):
+            if result:
+                text, rule = result
+                repeat = self.store.add_repeat(self.list_id, text, **rule)
+                self.store.spawn_repeats(self.day)
+                self.show_repeats(repeat)
+                self.show_todos()
+                self.query_one("#repeats").focus()
+
+        self.push_screen(RepeatDialog(), add)
+
+    def edit_repeat(self):
+        """Edit text and rule, spawning its todo if the new rule is due today."""
+        if not (repeat := self.highlighted_repeat()):
+            return
+
+        def edit(result: tuple[str, dict] | None):
+            if result:
+                text, rule = result
+                self.show_repeats(self.store.update_repeat(repeat.id, text, **rule))
+                self.store.spawn_repeats(self.day)
+                self.show_todos()
+
+        self.push_screen(RepeatDialog(repeat), edit)
+
+    def delete_repeat(self):
+        """Delete, keeping its todos, then highlight the next repeat, or the previous if it was last."""
+        if not (repeat := self.highlighted_repeat()):
+            return
+        self.store.delete_repeat(repeat.id)
+        self.show_repeats(successor(self.repeats, repeat))
+        self.show_todos()
+
     def action_toggle_todo(self):
         if todo := self.highlighted_todo():
             self.show_todos(self.store.update_todo(todo.id, done=not todo.done))
 
-    def action_delete_todo(self):
+    def delete_todo(self):
         """Delete, then highlight the next todo shown, or the previous one if it was last."""
         if not (todo := self.highlighted_todo()):
             return
         shown = [t for _, todos in sections(self.todos) for t in todos]
-        index = shown.index(todo)
-        rest = [t for t in shown if t is not todo]
         self.store.delete_todo(todo.id)
-        self.show_todos(rest[min(index, len(rest) - 1)] if rest else None)
+        self.show_todos(successor(shown, todo))
 
     def action_shift_date(self, days: int):
         if todo := self.highlighted_todo():
