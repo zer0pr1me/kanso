@@ -45,15 +45,17 @@ def texts(node: SyncNode) -> list[str]:
     return sorted(t.title for l in node.store.lists() for t in node.store.todos(l.id))
 
 
-async def running(*nodes: SyncNode) -> list[asyncio.Task]:
-    tasks = [asyncio.create_task(n.run()) for n in nodes]
+async def running(*nodes: SyncNode):
+    for n in nodes:
+        n.task = asyncio.create_task(n.run())
     await eventually(lambda: all(n.store.is_trusted(n.transport.key) for n in nodes))
-    return tasks
 
 
 async def stop(*nodes: SyncNode):
+    """Close their transports and wait until they've stopped."""
     for n in nodes:
         await n.transport.close()
+        await asyncio.wait_for(n.task, 1)
 
 
 def add_todo(node: SyncNode, text: str):
@@ -66,10 +68,9 @@ def test_run_registers_own_device_and_ends_when_the_transport_closes(make):
     a = make("a")
 
     async def main():
-        task = asyncio.create_task(a.run())
+        a.task = asyncio.create_task(a.run())
         await eventually(lambda: [d.name for d in a.store.devices()] == ["a"])
         await stop(a)
-        await asyncio.wait_for(task, 1)
 
     asyncio.run(main())
 
@@ -136,6 +137,21 @@ def test_failed_pairing_raises_and_the_node_keeps_serving(make):
         await a.pair(b.transport.key, new_code(b.store))
         assert b.store.is_trusted("key-a") and not b.store.is_trusted("key-c")
         await stop(a, b)
+
+    asyncio.run(main())
+
+
+def test_stopping_ends_open_sessions(make):
+    a = make("a")
+
+    async def main():
+        await running(a)
+        silent = MemoryTransport("key-x", a.transport.network)
+        await silent.connect("key-a")  # and never says hello
+        await eventually(lambda: a.sessions)
+        [session] = a.sessions
+        await stop(a)
+        assert session.cancelled()
 
     asyncio.run(main())
 

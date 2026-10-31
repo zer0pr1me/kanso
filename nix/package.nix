@@ -24,7 +24,7 @@ python3Packages.buildPythonApplication {
     textual-serve
   ];
 
-  nativeCheckInputs = [ python3Packages.pytestCheckHook ];
+  nativeCheckInputs = with python3Packages; [ pytestCheckHook pytest-xdist ];
   pythonImportsCheck = [ "kanso" ];
 
   meta = {

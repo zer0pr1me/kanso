@@ -1,8 +1,16 @@
 import asyncio
 
 import pytest
+import textual._wait
 
 from kanso.core.store import Store
+
+
+@pytest.fixture(autouse=True)
+def quick_idle_checks(monkeypatch):
+    """Pilot waits for the app to idle after every key, sleeping 20ms per check; 2ms checks
+    find it idle just as well and make the TUI tests several times faster."""
+    monkeypatch.setattr(textual._wait, "SLEEP_GRANULARITY", 1 / 500)
 
 
 @pytest.fixture

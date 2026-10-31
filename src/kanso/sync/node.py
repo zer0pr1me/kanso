@@ -37,13 +37,16 @@ class SyncNode:
         self.sessions: set[asyncio.Task] = set()
 
     async def run(self):
-        """Serve and sync until the transport closes."""
+        """Serve and sync until the transport closes; returns once no session is left running."""
         self.store.add_device(self.transport.key, self.name)
         syncing = asyncio.create_task(self.keep_synced())
         try:
             await self.serve()
         finally:
-            syncing.cancel()
+            tasks = [syncing, *self.sessions]
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def serve(self):
         try:

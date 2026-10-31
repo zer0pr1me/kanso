@@ -88,7 +88,7 @@ which also runs the test suite.
 ## Develop
 
 ```sh
-uv run pytest
+uv run pytest         # in parallel; add -n0 to run serially, e.g. to use a debugger
 KANSO_NETWORK_TESTS=1 uv run pytest   # also connect real iroh nodes (needs internet)
 scripts/install-hooks.sh   # once per clone: run the tests before every commit
 ```
