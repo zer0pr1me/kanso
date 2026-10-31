@@ -1,13 +1,19 @@
+import asyncio
 from datetime import date, timedelta
 
 import pytest
-from textual.widgets import ContentSwitcher, Input, OptionList
+from textual.widgets import ContentSwitcher, Input, OptionList, Static
 
 from conftest import notifications, run, texts
-from kanso.core.store import NAME_MAX
+from kanso.core.store import NAME_MAX, Store
+from kanso.sync import node as node_module
+from kanso.sync.node import SyncNode, device_key, owner_lock
+from kanso.sync.protocol import new_code
+from kanso.sync.transport import MemoryTransport
 from kanso.tui import app as app_module
 from kanso.tui.app import KansoApp
-from kanso.tui.dialogs import RepeatDialog, TextPrompt
+from kanso.tui import dialogs
+from kanso.tui.dialogs import ConnectDialog, RepeatDialog, TextPrompt
 
 TODAY = date.today()
 TOMORROW = TODAY + timedelta(days=1)
@@ -456,3 +462,130 @@ def test_day_change_spawns_and_redraws(store, repeating, monkeypatch):
         assert prompts(app, "todos") == ["Tomorrow", label("x ↻"), label("y ↻")]
 
     run(KansoApp(store), check)
+
+
+# Sync
+
+
+@pytest.fixture
+def network(monkeypatch):
+    """An in-memory network, with nodes polling for changes often, though not so often
+    that the app never looks idle to the test pilot, which then waits after each key."""
+    monkeypatch.setattr(node_module, "POLL", 0.2)
+    return {}
+
+
+def sync_over(network: dict):
+    """A `start_node` for the app on the in-memory `network`, as key-app."""
+
+    async def start(store, on_update):
+        return SyncNode(store, MemoryTransport("key-app", network), "app", on_update)
+
+    return start
+
+
+@pytest.fixture
+def remote(tmp_path, network):
+    """Another device, b, on the network; run it with `b.run()` inside the app's loop."""
+    (tmp_path / "b").mkdir()
+    store = Store(tmp_path / "b" / "kanso.db")
+    yield SyncNode(store, MemoryTransport("key-b", network), "b")
+    store.close()
+
+
+async def eventually(condition, timeout: float = 2):
+    async with asyncio.timeout(timeout):
+        while not condition():
+            await asyncio.sleep(0.01)
+
+
+def dialog_text(app, id: str) -> str:
+    return str(app.screen.query_one(f"#{id}", Static).render())
+
+
+def test_without_sync_connect_shows_id_and_code_only(store):
+    async def check(app, pilot):
+        await pilot.press("c")
+        assert isinstance(app.screen, ConnectDialog)
+        assert dialog_text(app, "key") == device_key(store)
+        assert dialog_text(app, "status") == "Sync is off"
+        assert not app.screen.query(Input)
+        await pilot.press("escape")
+        assert on_main_screen(app)
+
+    run(KansoApp(store), check)
+    assert store.meta("pair_code")
+
+
+def test_a_second_window_leaves_sync_to_the_first(store, network):
+    lock = owner_lock(store)
+
+    async def check(app, pilot):
+        assert app.node is None
+        await pilot.press("c")
+        assert "another kanso window" in dialog_text(app, "status")
+
+    run(KansoApp(store, sync_over(network)), check)
+    lock.close()
+
+
+def test_connect_pairs_and_remote_changes_appear_keeping_the_highlight(store, inbox, network, remote):
+    async def check(app, pilot):
+        asyncio.create_task(remote.run())
+        await eventually(lambda: remote.store.is_trusted("key-b"))
+        code = new_code(remote.store)
+        await pilot.press("l", "j", "c")
+        await pilot.press(*"key-b", "enter", *code, "enter")
+        await eventually(lambda: on_main_screen(app))
+        assert "Connected to b" in notifications(app)
+        assert store.is_trusted("key-b") and remote.store.is_trusted("key-app")
+        await eventually(lambda: app.sub_title.startswith("1 device online · synced "))
+        remote.store.add_todo(remote.store.lists()[0].id, "from b")
+        await eventually(lambda: label("from b") in prompts(app, "todos"))
+        assert highlighted(app) == label("b") and app.focused.id == "todos"
+        await remote.transport.close()
+
+    run(KansoApp(store, sync_over(network)), check)
+    lock = owner_lock(store)  # released on exit
+    assert lock is not None
+    lock.close()
+
+
+def test_failed_connect_is_reported_and_dialog_stays(store, network, remote):
+    async def check(app, pilot):
+        asyncio.create_task(remote.run())
+        await pilot.press("c", *"key-b", "enter", *"WRONG-CODE0", "enter")
+        await eventually(lambda: notifications(app))
+        assert "Wrong or expired code" in notifications(app)[0]
+        assert isinstance(app.screen, ConnectDialog) and dialog_text(app, "status") == ""
+        app.screen.peer.focus()
+        await pilot.press("ctrl+u", *"key-app", "enter")
+        assert "own ID" in notifications(app)[-1]
+        await remote.transport.close()
+
+    run(KansoApp(store, sync_over(network)), check)
+
+
+@pytest.mark.parametrize("tool, message", [(["true"], "Copied"), (None, "terminal's clipboard")])
+def test_ctrl_y_copies_id_and_code(store, monkeypatch, tool, message):
+    monkeypatch.setattr(dialogs, "clipboard_command", lambda: tool)
+
+    async def check(app, pilot):
+        await pilot.press("c", "ctrl+y")
+        assert app.clipboard == f"{device_key(store)} {app.screen.code}"
+        assert message in notifications(app)[-1]
+
+    run(KansoApp(store), check)
+
+
+def test_remote_deletion_of_the_shown_list_empties_the_panes(store, inbox, network, remote):
+    async def check(app, pilot):
+        asyncio.create_task(remote.run())
+        await app.node.pair("key-b", new_code(remote.store))
+        await pilot.press("l")
+        remote.store.delete_list(inbox.id)
+        await eventually(lambda: prompts(app, "lists") == [])
+        assert prompts(app, "todos") == []
+        await remote.transport.close()
+
+    run(KansoApp(store, sync_over(network)), check)

@@ -6,7 +6,7 @@ from sqlmodel import select
 
 from conftest import texts
 from kanso.core import store as store_module
-from kanso.core.models import SYNCED_MODELS, Repeat, Todo, TodoList
+from kanso.core.models import SYNCED_MODELS, Repeat, Todo, TodoList, device_id
 from kanso.core.store import NotFound, Store
 
 # Setup
@@ -41,6 +41,7 @@ def test_every_field_of_every_synced_model_persists(path):
     todo_list = s.add_list("Inbox")
     s.add_repeat(todo_list.id, "r", "weekdays", weekdays=[date.today().weekday()])
     s.update_todo(s.todos(todo_list.id)[0].id, done=True, labels=["home"], scheduled_at=None)
+    s.add_device("k", "Laptop")
     before = {m: [r.model_dump() for r in s.db.exec(select(m))] for m in SYNCED_MODELS}
     node = s.clock.node
     s.close()
@@ -55,6 +56,7 @@ def test_clock_resumes_after_stored_stamps(path, model):
     s = Store(path)
     todo_list = s.add_list("Inbox")
     s.add_repeat(todo_list.id, "r")
+    s.add_device("k", "Laptop")
     latest = s.db.exec(select(model).order_by(model.modified_at.desc())).first()
     # Make this model's stamp the newest, as if written by a replica with a clock ahead.
     latest.modified_at = "999999999999999-000000-z"
@@ -450,3 +452,39 @@ def test_spawn_is_idempotent_and_skips_changed_or_deleted_occurrences(store, tod
     store.delete_todo(todo.id)
     assert store.spawn_repeats() == []
     assert texts(store, todo_list.id) == []
+
+
+# Devices and local settings
+
+
+def test_add_device_trusts_its_key(store):
+    laptop = store.add_device("key-1", " Laptop ")
+    assert laptop.id == device_id("key-1") and laptop.name == "Laptop"
+    assert store.is_trusted("key-1") and not store.is_trusted("key-2")
+    store.add_device("key-2", "Phone")
+    assert [d.name for d in store.devices()] == ["Laptop", "Phone"]
+
+
+def test_re_adding_a_device_renames_and_restores_it(store):
+    device = store.add_device("key-1", "Laptop")
+    device.deleted = True
+    store._save(device)
+    assert not store.is_trusted("key-1")
+    store.add_device("key-1", "Work laptop")
+    assert [(d.name, d.key) for d in store.devices()] == [("Work laptop", "key-1")]
+
+
+def test_meta_is_set_once_and_persists(path):
+    s = Store(path)
+    assert s.meta("x") is None
+    assert s.meta("x", lambda: "first") == "first"
+    assert s.meta("x", lambda: "second") == "first"
+    s.close()
+    s = Store(path)
+    assert s.meta("x", lambda: "third") == "first"
+    s.set_meta("x", "changed")
+    assert s.meta("x") == "changed"
+    s.set_meta("x", None)
+    s.set_meta("absent", None)
+    assert s.meta("x") is None
+    s.close()

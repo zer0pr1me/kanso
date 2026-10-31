@@ -1,15 +1,23 @@
 """Modal dialogs that save as they close."""
 
 import calendar
+import os
+import shutil
+import subprocess
+import sys
 from collections.abc import Callable
 
-from textual.app import ComposeResult
+from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.screen import ModalScreen
-from textual.widgets import ContentSwitcher, Input, RadioButton, RadioSet
+from textual.widgets import ContentSwitcher, Input, RadioButton, RadioSet, Static
 
 from kanso.core.models import Repeat
+from kanso.core.store import Store
+from kanso.sync.node import SyncNode
+from kanso.sync.protocol import CODE_TTL, new_code
+from kanso.sync.transport import SyncError
 from kanso.tui.widgets import VimRadioSet, VimSelectionList
 
 
@@ -120,3 +128,92 @@ class RepeatDialog(Dialog[dict]):
     def on_radio_set_changed(self, event: RadioSet.Changed):
         self.kind = event.pressed.id.removeprefix("kind-")
         self.fields.current = self.field_for(self.kind)
+
+
+def clipboard_command() -> list[str] | None:
+    """The system's clipboard tool, if installed and usable here."""
+    if os.environ.get("WAYLAND_DISPLAY") and shutil.which("wl-copy"):
+        return ["wl-copy"]
+    if os.environ.get("DISPLAY") and shutil.which("xclip"):
+        return ["xclip", "-selection", "clipboard"]
+    if sys.platform == "darwin":
+        return ["pbcopy"]
+    if sys.platform == "win32":
+        return ["clip"]
+    return None
+
+
+def copy(app: App, text: str) -> bool:
+    """Copy `text` with the system's clipboard tool, and through the terminal (OSC 52), which
+    reaches the local clipboard over SSH but which tmux and some terminals ignore. Whether the
+    system tool copied it."""
+    app.copy_to_clipboard(text)
+    if not (command := clipboard_command()):
+        return False
+    try:
+        subprocess.run(command, input=text.encode(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2, check=True)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return True
+
+
+class ConnectDialog(ModalScreen[None]):
+    """Shows this device's ID and a fresh pairing code for another device to connect with,
+    and connects to another device by its ID and code, joining the two networks.
+
+    Without a sync node (`note` says why), only shows the ID and code.
+    """
+
+    BINDINGS = [("escape", "dismiss", "Close"), Binding("ctrl+y", "copy", "Copy ID and code")]
+    CSS = """
+    ConnectDialog { align: center middle; }
+    ConnectDialog > Vertical { width: 72; height: auto; border: round $accent; background: $surface; padding: 0 1; }
+    ConnectDialog .title { text-style: bold; color: $text-accent; margin-top: 1; }
+    ConnectDialog #status { color: $text-muted; margin-top: 1; }
+    """
+
+    def __init__(self, store: Store, key: str, node: SyncNode | None, note: str | None = None):
+        super().__init__()
+        self.key, self.node, self.note = key, node, note
+        self.code = new_code(store)
+        self.peer = Input(placeholder="Other device's ID", id="peer")
+        self.peer_code = Input(placeholder="Its code", id="code")
+        self.status = Static(note or "", id="status")
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Static("This device", classes="title")
+            yield Static(self.key, id="key")
+            yield Static(f"Code {self.code}, valid {CODE_TTL // 60} minutes (ctrl+y copies both)", id="own-code")
+            if self.node:
+                yield Static("Connect to", classes="title")
+                yield self.peer
+                yield self.peer_code
+            yield self.status
+
+    def action_copy(self):
+        if copy(self.app, f"{self.key} {self.code}"):
+            self.notify("Copied this device's ID and code")
+        else:
+            self.notify("Sent the ID and code to the terminal's clipboard; if they didn't arrive, it doesn't support that")
+
+    def on_input_submitted(self, event: Input.Submitted):
+        event.stop()
+        key, code = self.peer.value.strip(), self.peer_code.value.strip()
+        if not (key and code):
+            (self.peer_code if key else self.peer).focus()
+        elif key == self.key:
+            self.notify("That's this device's own ID", severity="error")
+        else:
+            self.status.update("Connecting…")
+            self.run_worker(self.connect(key, code), exclusive=True)
+
+    async def connect(self, key: str, code: str):
+        try:
+            result = await self.node.pair(key, code)
+        except SyncError as error:
+            self.status.update("")
+            self.notify(str(error), severity="error")
+            return
+        self.notify(f"Connected to {result.peer}")
+        self.dismiss()

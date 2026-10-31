@@ -1,6 +1,6 @@
 # Architecture
 
-Personal, single-user, local-first todo app, rewritten from scratch in `src/kanso/` (`v1/` is history only, not a reference). No server, no auth: each instance owns its SQLite database. Syncing between instances (possibly P2P, e.g. libp2p) comes later.
+Personal, single-user, local-first todo app, rewritten from scratch in `src/kanso/` (`v1/` is history only, not a reference). No server, no accounts: each instance owns its SQLite database, and paired devices sync peer to peer over iroh.
 
 - `core/`: no UI dependencies; the part future frontends (web, mobile) build on.
   - `store.py`: `Store`, the database and every operation on it. UIs call only this.
@@ -8,6 +8,11 @@ Personal, single-user, local-first todo app, rewritten from scratch in `src/kans
   - `order.py`: how todos are grouped by date and autosorted; add autosort rules to `autosort_key`.
   - `models.py`: SQLModel tables, kept sync-ready: UUID ids, tombstone deletes (`deleted`), per-field hybrid-logical-clock stamps (`stamps`, set by `Store._save`; `clock.py`) merged field by field, last writer wins (`merge.py`), and fractional-index string positions (`position.py`). Preserve these properties in every change.
   - `migrations.py`: every change to the table models needs a migration appended to `MIGRATIONS`, written as a per-row data transform (it also upgrades rows synced from older replicas). Never edit a released migration.
+  - `sync.py`: raw rows and digests as replicas exchange them; `Store.digest`/`export`/`merge_rows` use it. New synced tables go in `SYNCED_MODELS`.
+- `sync/`: networking, no UI dependencies.
+  - `transport.py`: `Transport` dials and accepts peers by public key; `IrohTransport` for real, `MemoryTransport` for tests. `Channel` carries length-prefixed JSON.
+  - `protocol.py`: one session (hello, digests, rows) and pairing codes. Synced `Device` rows are the trust list.
+  - `node.py`: `SyncNode` serves peers and syncs with every device on start, after local changes and periodically; `owner_lock` makes one process per data dir the node.
 - `tui/`: Textual app, the only UI.
 - `web.py`: serves the same Textual app in the browser via textual-serve. No separate web frontend.
 
@@ -22,3 +27,4 @@ How to run the app is documented in `README.md`. Keep it up to date whenever com
 
 - Test code thoroughly: every behavior, including error paths and validation.
 - Tests live in `tests/`; run `uv run pytest` and keep it green (warnings are errors).
+- Network tests (real iroh) run only with `KANSO_NETWORK_TESTS=1`; everything else uses `MemoryTransport` and must stay offline.

@@ -15,7 +15,7 @@ in
     dataDir = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
-      example = lib.literalExpression ''"''${config.home.homeDirectory}/Sync/kanso"'';
+      example = lib.literalExpression ''"''${config.home.homeDirectory}/kanso"'';
       description = ''
         Directory holding the kanso database. `null` keeps the default,
         `~/.local/share/kanso`. A `KANSO_DATA_DIR` set in the environment still wins.

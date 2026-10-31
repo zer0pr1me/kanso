@@ -6,7 +6,7 @@ so replicas merge field by field, last writer wins (`merge.py`); `modified_at` i
 """
 
 from datetime import date
-from uuid import UUID, uuid4
+from uuid import UUID, uuid4, uuid5
 
 from sqlalchemy import JSON, Column
 from sqlmodel import Field, SQLModel
@@ -52,7 +52,22 @@ class Todo(Record, table=True):
     labels: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
 
 
-SYNCED_MODELS = (TodoList, Repeat, Todo)
+class Device(Record, table=True):
+    """A replica of this network: its node `key` (public key) is trusted to sync. The id
+    derives from the key (`device_id`), so networks that both know a device merge its row."""
+
+    key: str = Field(index=True)
+    name: str
+
+
+DEVICE_NAMESPACE = UUID("6f1c2a4e-9b0d-4f5e-8a37-2d9c1b7e4a60")
+
+
+def device_id(key: str) -> UUID:
+    return uuid5(DEVICE_NAMESPACE, key)
+
+
+SYNCED_MODELS = (TodoList, Repeat, Todo, Device)
 """The tables replicas exchange, parents first."""
 
 UNSTAMPED = {"id", "modified_at", "stamps"}

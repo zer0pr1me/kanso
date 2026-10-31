@@ -1,3 +1,4 @@
+from collections.abc import Awaitable, Callable
 from datetime import date
 
 from textual import on
@@ -6,7 +7,12 @@ from textual.containers import Horizontal
 from textual.widgets import ContentSwitcher, Footer, Header, OptionList
 
 from kanso.core.store import Store
+from kanso.sync import node
+from kanso.sync.node import SyncNode
+from kanso.tui.dialogs import ConnectDialog
 from kanso.tui.panes import ListContentsPane, ListsPane, RepeatsPane, TodosPane
+
+type StartNode = Callable[[Store, Callable[[bool], None]], Awaitable[SyncNode]]
 
 
 class KansoApp(App):
@@ -19,10 +25,15 @@ class KansoApp(App):
     #todos > .option-list--option-disabled { color: $text-accent; text-style: bold; }
     """
 
-    def __init__(self, store: Store):
+    def __init__(self, store: Store, start_node: StartNode | None = None):
+        """With `start_node`, this process syncs, unless another one owns the data dir."""
         super().__init__()
         self.store = store
         self.day = date.today()
+        self.start_node = start_node
+        self.node: SyncNode | None = None
+        self.lock = None
+        self.sync_note: str | None = "Sync is off"
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -33,10 +44,41 @@ class KansoApp(App):
                 yield RepeatsPane(self.store, id="repeats")
         yield Footer()
 
-    def on_mount(self):
+    async def on_mount(self):
         self.store.spawn_repeats(self.day)
         self.query_one(ListsPane).show()
         self.set_interval(60, self.check_day)
+        if self.start_node:
+            await self.start_sync()
+
+    async def start_sync(self):
+        if not (lock := node.owner_lock(self.store)):
+            self.sync_note = "Sync runs in another kanso window: connect from there"
+            return
+        self.lock, self.sync_note = lock, None
+        self.node = await self.start_node(self.store, self.sync_updated)
+        self.run_worker(self.node.run(), name="sync", exit_on_error=False)
+
+    async def on_unmount(self):
+        if self.node:
+            await self.node.transport.close()
+        if self.lock:
+            self.lock.close()
+
+    def sync_updated(self, changed: bool):
+        """Show the sync status; after merges, redraw keeping the highlights."""
+        online = len(self.node.online)
+        synced = f" · synced {self.node.synced_at:%H:%M}" if self.node.synced_at else ""
+        self.sub_title = f"{online} device{'' if online == 1 else 's'} online{synced}"
+        if changed:
+            lists = self.query_one(ListsPane)
+            lists.show(lists.current)
+            pane = self.shown_pane()
+            pane.show(pane.current)
+
+    def action_connect(self):
+        key = self.node.transport.key if self.node else node.device_key(self.store)
+        self.push_screen(ConnectDialog(self.store, key, self.node, self.sync_note))
 
     def check_day(self):
         """Once the date changes, spawn the new day's repeats and redraw the dated sections."""
@@ -53,10 +95,13 @@ class KansoApp(App):
 
     @on(OptionList.OptionHighlighted, "#lists")
     def show_list(self):
+        """Show the highlighted list's contents; if it's the same list as before (redrawn),
+        keep their highlights."""
         list_id = self.query_one(ListsPane).current.id
         for pane in self.query(ListContentsPane):
+            same = pane.list_id == list_id
             pane.list_id = list_id
-            pane.show()
+            pane.show(pane.current if same else None)
 
     @on(OptionList.OptionSelected, "#lists")
     def action_focus_pane(self):
@@ -83,7 +128,7 @@ class KansoApp(App):
 def main():
     store = Store()
     try:
-        KansoApp(store).run()
+        KansoApp(store, node.start).run()
     finally:
         store.close()
 

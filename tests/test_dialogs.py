@@ -5,6 +5,7 @@ from textual.widgets import Input
 from conftest import notifications, run
 from kanso.core.models import Repeat
 from kanso.core.repeats import clean_rule
+from kanso.tui import dialogs
 from kanso.tui.dialogs import RepeatDialog, TextPrompt
 from kanso.tui.widgets import LabelSuggester
 
@@ -183,3 +184,53 @@ def test_vim_keys_move_through_kinds_and_weekdays():
         assert sorted(app.dialog.weekdays.selected) == [0, 2, 6]
 
     run(repeat_dialog(), check)
+
+
+# Clipboard
+
+
+@pytest.mark.parametrize(
+    "env, installed, platform, expected",
+    [
+        ({"WAYLAND_DISPLAY": "w", "DISPLAY": ":0"}, {"wl-copy", "xclip"}, "linux", ["wl-copy"]),
+        ({"WAYLAND_DISPLAY": "w", "DISPLAY": ":0"}, {"xclip"}, "linux", ["xclip", "-selection", "clipboard"]),
+        ({"DISPLAY": ":0"}, {"wl-copy", "xclip"}, "linux", ["xclip", "-selection", "clipboard"]),
+        ({}, {"wl-copy", "xclip"}, "linux", None),
+        ({}, set(), "darwin", ["pbcopy"]),
+        ({}, set(), "win32", ["clip"]),
+    ],
+)
+def test_clipboard_command_fits_the_session(monkeypatch, env, installed, platform, expected):
+    for var in ("WAYLAND_DISPLAY", "DISPLAY"):
+        monkeypatch.delenv(var, raising=False)
+    for var, value in env.items():
+        monkeypatch.setenv(var, value)
+    monkeypatch.setattr(dialogs.shutil, "which", lambda name: name in installed and f"/bin/{name}")
+    monkeypatch.setattr(dialogs.sys, "platform", platform)
+    assert dialogs.clipboard_command() == expected
+
+
+class Recorder:
+    clipboard = None
+
+    def copy_to_clipboard(self, text):
+        self.clipboard = text
+
+
+@pytest.mark.parametrize(
+    "command, copied",
+    [(None, False), (["cat"], True), (["false"], False), (["no-such-tool-anywhere"], False)],
+)
+def test_copy_uses_the_tool_and_the_terminal(monkeypatch, command, copied):
+    monkeypatch.setattr(dialogs, "clipboard_command", lambda: command)
+    app = Recorder()
+    assert dialogs.copy(app, "key code") is copied
+    assert app.clipboard == "key code"
+
+
+def test_copy_passes_the_text_to_the_tool(monkeypatch):
+    calls = []
+    monkeypatch.setattr(dialogs, "clipboard_command", lambda: ["tool"])
+    monkeypatch.setattr(dialogs.subprocess, "run", lambda command, **options: calls.append((command, options["input"])))
+    assert dialogs.copy(Recorder(), "key code")
+    assert calls == [(["tool"], b"key code")]

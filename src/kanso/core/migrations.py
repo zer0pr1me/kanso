@@ -38,7 +38,12 @@ def add_field_stamps(rows: Rows) -> Rows:
     return {**rows, **{table: [stamped(row) for row in rows.get(table, [])] for table in tables}}
 
 
-MIGRATIONS: list[Callable[[Rows], Rows]] = [add_todo_labels, add_todo_repeat_id, add_field_stamps]
+def add_devices(rows: Rows) -> Rows:
+    """The `device` table is new and starts empty; no rows change."""
+    return rows
+
+
+MIGRATIONS: list[Callable[[Rows], Rows]] = [add_todo_labels, add_todo_repeat_id, add_field_stamps, add_devices]
 
 VERSION_KEY = "schema_version"
 

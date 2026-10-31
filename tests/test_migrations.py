@@ -162,6 +162,11 @@ def test_upgrade_stamps_every_field_with_modified_at():
     assert upgraded["todo"] == rows["todo"] and upgraded["repeat"] == []
 
 
+def test_upgrade_to_devices_changes_no_rows():
+    rows = {"todo": [{"id": "t"}]}
+    assert migrations.add_devices(rows) == rows
+
+
 def test_upgrades_database_from_schema_0(path):
     store = Store(path)
     inbox = store.add_list("Inbox")
@@ -176,6 +181,7 @@ def test_upgrades_database_from_schema_0(path):
     sql(path, f"CREATE TABLE todo AS SELECT {columns} FROM old")
     sql(path, "DROP TABLE old")
     sql(path, "DROP TABLE repeat")
+    sql(path, "DROP TABLE device")
     sql(path, "UPDATE meta SET value = '0' WHERE key = 'schema_version'")
     store = Store(path)
     [todo] = store.todos(inbox.id)

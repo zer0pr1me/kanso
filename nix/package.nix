@@ -1,4 +1,4 @@
-{ lib, python3Packages }:
+{ lib, python3Packages, callPackage }:
 
 python3Packages.buildPythonApplication {
   pname = "kanso";
@@ -17,6 +17,7 @@ python3Packages.buildPythonApplication {
 
   build-system = [ python3Packages.hatchling ];
   dependencies = with python3Packages; [
+    (callPackage ./iroh.nix { })
     platformdirs
     sqlmodel
     textual

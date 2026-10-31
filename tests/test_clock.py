@@ -1,3 +1,5 @@
+import pytest
+
 from kanso.core import clock
 from kanso.core.clock import Clock
 
@@ -37,3 +39,20 @@ def test_resumes_after_last_stamp(monkeypatch):
 def test_node_breaks_ties(monkeypatch):
     freeze(monkeypatch, 1000)
     assert Clock("a").now() < Clock("b").now()
+
+
+def test_observe_moves_past_remote_stamps(monkeypatch):
+    freeze(monkeypatch, 1000)
+    c = Clock("a")
+    c.observe("000000000005000-000007-b")
+    assert c.now() == "000000000005000-000008-a"
+    c.observe("000000000001000-000000-b")  # older: no effect
+    assert c.now() == "000000000005000-000009-a"
+
+
+def test_observe_refuses_stamps_over_an_hour_ahead(monkeypatch):
+    freeze(monkeypatch, 1000)
+    c = Clock("a")
+    c.observe(f"{1000 + clock.MAX_DRIFT_MS:015d}-000000-b")
+    with pytest.raises(ValueError, match="ahead"):
+        c.observe(f"{1001 + clock.MAX_DRIFT_MS:015d}-000000-b")

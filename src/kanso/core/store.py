@@ -1,17 +1,22 @@
+import json
 import os
+from collections.abc import Callable
 from datetime import date, timedelta
 from pathlib import Path
 from uuid import UUID, uuid4, uuid5
 
 from platformdirs import user_data_path
 from sqlalchemy import Engine, event, inspect
+from sqlalchemy import text
 from sqlmodel import Session, create_engine, func, select
 
 from kanso.core import position
 from kanso.core.clock import Clock
-from kanso.core.migrations import migrate
-from kanso.core.models import SYNCED_MODELS, UNSTAMPED, Meta, Record, Repeat, Todo, TodoList
+from kanso.core.merge import merge
+from kanso.core.migrations import Rows, migrate, upgrade
+from kanso.core.models import SYNCED_MODELS, UNSTAMPED, Device, Meta, Record, Repeat, Todo, TodoList, device_id
 from kanso.core.repeats import RULE_FIELDS, clean_rule, occurs_on
+from kanso.core.sync import Digest, decode, encode, newest_stamp, stamps_hash
 
 NAME_MAX = 200
 LABEL_MAX = 50
@@ -112,25 +117,43 @@ class Store:
     """The local database and every operation on it. UIs talk only to this."""
 
     def __init__(self, path: Path | None = None):
-        self.engine = connect(path or default_path())
+        self.path = path or default_path()
+        self.engine = connect(self.path)
         try:
             migrate(self.engine)
         except BaseException:
             self.engine.dispose()
             raise
         self.db = Session(self.engine, expire_on_commit=False)
+        self.clock = Clock(self.meta("node", lambda: uuid4().hex), self.last_change())
+
+    def last_change(self) -> str | None:
+        """The newest stamp of any synced row, written here or merged from elsewhere."""
         stamps = [self.db.exec(select(func.max(m.modified_at))).one() for m in SYNCED_MODELS]
-        self.clock = Clock(self._node_id(), max(filter(None, stamps), default=None))
+        return max(filter(None, stamps), default=None)
 
     def close(self):
         self.db.close()
         self.engine.dispose()
 
-    def _node_id(self) -> str:
-        meta = self.db.get(Meta, "node") or Meta(key="node", value=uuid4().hex)
-        self.db.add(meta)
-        self.db.commit()
+    def meta(self, key: str, make: Callable[[], str] | None = None) -> str | None:
+        """This replica's own setting `key`, never synced; if unset, set to `make()` or `None`."""
+        if not (meta := self.db.get(Meta, key)):
+            if not make:
+                return None
+            meta = Meta(key=key, value=make())
+            self.db.add(meta)
+            self.db.commit()
         return meta.value
+
+    def set_meta(self, key: str, value: str | None):
+        """Set this replica's own setting `key`, or remove it if `value` is `None`."""
+        if value is None:
+            if meta := self.db.get(Meta, key):
+                self.db.delete(meta)
+        else:
+            self.db.merge(Meta(key=key, value=value))
+        self.db.commit()
 
     def _save[T: Record](self, *records: T) -> T:
         """Stamp each record's changed fields with one new stamp and commit; unchanged records aren't written."""
@@ -270,3 +293,75 @@ class Store:
             return None
         pos = position_at(self.todos(repeat.list_id), None)
         return self._save(Todo(id=id, list_id=repeat.list_id, repeat_id=repeat.id, text=repeat.text, position=pos, scheduled_at=day))
+
+    # Devices
+
+    def devices(self) -> list[Device]:
+        return self._live(Device)
+
+    def is_trusted(self, key: str) -> bool:
+        """Whether `key` belongs to a device of this network."""
+        return self._is_live(self.db.get(Device, device_id(key)))
+
+    def add_device(self, key: str, name: str) -> Device:
+        """Trust `key` (again, if it was removed), named `name`."""
+        device = self.db.get(Device, device_id(key)) or Device(id=device_id(key), key=key, position="")
+        device.sqlmodel_update({"name": clean_name(name), "deleted": False})
+        if not device.position:
+            device.position = position_at(self.devices(), None)
+        return self._save(device)
+
+    # Sync: raw rows in and out (see `sync.py`)
+
+    def _tables(self):
+        return [(model, model.__tablename__) for model in SYNCED_MODELS]
+
+    def digest(self) -> Digest:
+        """Every synced row's id and stamps hash, deleted ones too, by table."""
+        conn = self.db.connection()
+        return {
+            table: {id: stamps_hash(stamps) for id, stamps in conn.execute(text(f'SELECT id, stamps FROM "{table}"'))}
+            for _, table in self._tables()
+        }
+
+    def export(self, ids: dict[str, list[str]]) -> Rows:
+        """The rows with `ids`, by table, as raw rows."""
+        conn = self.db.connection()
+        query = 'SELECT * FROM "{}" WHERE id IN (SELECT value FROM json_each(:ids))'
+        return {
+            table: [dict(row._mapping) for row in conn.execute(text(query.format(table)), {"ids": json.dumps(ids[table])})]
+            for _, table in self._tables()
+            if ids.get(table)
+        }
+
+    def merge_rows(self, rows: Rows, version: int) -> int:
+        """Merge raw rows another replica sent in schema `version`, field by field; returns
+        how many rows changed. All or nothing: raises `ValueError` for a newer schema,
+        unknown tables or columns, malformed stamps, or stamps too far in the future."""
+        rows = upgrade(rows, version)
+        tables = dict((table, model) for model, table in self._tables())
+        if unknown := rows.keys() - tables.keys():
+            raise ValueError(f"Rows for unknown tables: {', '.join(sorted(unknown))}")
+        if newest := newest_stamp(rows):
+            self.clock.observe(newest)
+        conn = self.db.connection()
+        changed = 0
+        try:
+            for table, model in tables.items():
+                columns = set(model.__table__.columns.keys())
+                for row in rows.get(table, []):
+                    if set(row) != columns:
+                        raise ValueError(f"Row {row.get('id')} of {table} doesn't match its columns")
+                    local = conn.execute(text(f'SELECT * FROM "{table}" WHERE id = :id'), {"id": row["id"]}).first()
+                    local = decode(dict(local._mapping)) if local else None
+                    if (merged := merge(local, decode(row))) != local:
+                        names = ", ".join(f'"{c}"' for c in merged)
+                        values = ", ".join(f":{c}" for c in merged)
+                        conn.execute(text(f'INSERT OR REPLACE INTO "{table}" ({names}) VALUES ({values})'), encode(merged))
+                        changed += 1
+        except BaseException:
+            self.db.rollback()
+            raise
+        self.db.commit()
+        self.db.expire_all()
+        return changed

@@ -318,6 +318,17 @@ wheels = [
 ]
 
 [[package]]
+name = "iroh"
+version = "1.2.0"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/eb/47/562411d054f7b15e8aaca8fd965c42e8d61acae0c58773c3a2d0266a03ef/iroh-1.2.0-py3-none-macosx_11_0_arm64.whl", hash = "sha256:d7c407d9483c8e0c7680e569f906e892a19d4c13af537ba9127f7de130c0d399", size = 5752039, upload-time = "2026-10-22T19:40:22.634Z" },
+    { url = "https://files.pythonhosted.org/packages/61/5d/7082a1eafa89da2ff72800344d179a89619b69f924b1a9e717784ad5b472/iroh-1.2.0-py3-none-manylinux_2_28_aarch64.whl", hash = "sha256:049eef820a5710093cb0cc9d645da00f69dfbf5b0ac7647741da2168b79d0c10", size = 6950433, upload-time = "2026-10-22T19:40:25.237Z" },
+    { url = "https://files.pythonhosted.org/packages/9e/09/15cf50f36f90e364cde73b4df392d7bb91cec412455b06226c2ec660716a/iroh-1.2.0-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:61222adc81745009f34ca1fed42633f6cac865c9ed35a4701eb8c0174cb8399a", size = 7198245, upload-time = "2026-10-22T19:40:27.434Z" },
+    { url = "https://files.pythonhosted.org/packages/e2/c0/f0fe409eee4b0afaee56ae9a8cb6a15d2f4d443d1e12ef5529141a7b0a62/iroh-1.2.0-py3-none-win_amd64.whl", hash = "sha256:1eedafeb906f57d4252b69379673b039894e28a35bbb9b54ddfdcae83411cfa5", size = 6048862, upload-time = "2026-10-22T19:40:29.281Z" },
+]
+
+[[package]]
 name = "jinja2"
 version = "3.1.6"
 source = { registry = "https://pypi.org/simple" }
@@ -334,6 +345,7 @@ name = "kanso"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "iroh" },
     { name = "platformdirs" },
     { name = "sqlmodel" },
     { name = "textual" },
@@ -347,6 +359,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "iroh", specifier = ">=1.2.0" },
     { name = "platformdirs" },
     { name = "sqlmodel" },
     { name = "textual" },

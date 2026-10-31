@@ -13,7 +13,7 @@ from textual.widgets.option_list import Option
 
 from kanso.core.models import Record, Repeat, Todo, TodoList
 from kanso.core.order import sections
-from kanso.core.store import NAME_MAX, Store
+from kanso.core.store import NAME_MAX, NotFound, Store
 from kanso.tui.dialogs import RepeatDialog, TextPrompt
 from kanso.tui.format import repeat_label, section_title, todo_label
 from kanso.tui.widgets import LabelSuggester, VimOptionList
@@ -29,7 +29,7 @@ def successor[T: Record](records: list[T], record: T) -> T | None:
 class RecordPane[T: Record](VimOptionList):
     """Records from the store, one option each, with the option id being the record id."""
 
-    BINDINGS = [("r", "app.toggle_repeats", "Todos/Repeats")]
+    BINDINGS = [("r", "app.toggle_repeats", "Todos/Repeats"), ("c", "app.connect", "Connect")]
 
     def __init__(self, store: Store, **options):
         super().__init__(**options)
@@ -50,11 +50,11 @@ class RecordPane[T: Record](VimOptionList):
         return self.records
 
     def show(self, highlight: T | None = None):
-        """Reload, highlighting `highlight` if given."""
+        """Reload, highlighting `highlight` if given and still there (sync may have deleted it)."""
         self.records = self.load()
         self.clear_options()
         self.add_options(self.make_options())
-        if highlight:
+        if highlight and any(r.id == highlight.id for r in self.records):
             self.highlighted = self.get_option_index(str(highlight.id))
 
     def show_without(self, record: T):
@@ -96,7 +96,7 @@ class ListsPane(RecordPane[TodoList]):
 
 
 class ListContentsPane[T: Record](RecordPane[T]):
-    """Records of the list `list_id`, set by the app; none until it is."""
+    """Records of the list `list_id`, set by the app; none until it is, or once sync deleted it."""
 
     BINDINGS = [Binding("left,h,escape", "app.focus_lists", "Lists", show=False)]
 
@@ -105,7 +105,10 @@ class ListContentsPane[T: Record](RecordPane[T]):
         self.list_id: UUID | None = None
 
     def load(self) -> list[T]:
-        return self.fetch(self.list_id) if self.list_id else []
+        try:
+            return self.fetch(self.list_id) if self.list_id else []
+        except NotFound:
+            return []
 
     def fetch(self, list_id: UUID) -> list[T]:
         raise NotImplementedError
