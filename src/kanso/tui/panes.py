@@ -9,12 +9,13 @@ from uuid import UUID
 
 from textual.binding import Binding
 from textual.content import Content
+from textual.message import Message
 from textual.widgets.option_list import Option
 
 from kanso.core.models import Record, Repeat, Todo, TodoList
 from kanso.core.order import sections
 from kanso.core.store import NAME_MAX, NotFound, Store
-from kanso.tui.dialogs import RepeatDialog, TextPrompt
+from kanso.tui.dialogs import ConfirmDialog, RepeatDialog, TextPrompt
 from kanso.tui.format import repeat_label, section_title, todo_label
 from kanso.tui.widgets import LabelSuggester, VimOptionList
 
@@ -57,9 +58,15 @@ class RecordPane[T: Record](VimOptionList):
         if highlight and any(r.id == highlight.id for r in self.records):
             self.highlighted = self.get_option_index(str(highlight.id))
 
-    def show_without(self, record: T):
-        """Reload after `record` was deleted, highlighting the one now in its place."""
-        self.show(successor(self.shown(), record))
+    def delete(self, record: T, question: str, delete: Callable[[UUID], object]):
+        """If `question` is confirmed, `delete` the record and highlight the one now in its place."""
+
+        def confirmed(yes: bool):
+            if yes:
+                delete(record.id)
+                self.show(successor(self.shown(), record))
+
+        self.app.push_screen(ConfirmDialog(question), confirmed)
 
     @property
     def current(self) -> T | None:
@@ -68,8 +75,20 @@ class RecordPane[T: Record](VimOptionList):
         return next((r for r in self.records if option and str(r.id) == option.id), None)
 
 
+def count(n: int, thing: str) -> str:
+    return f"{n} {thing}{'' if n == 1 else 's'}"
+
+
 class ListsPane(RecordPane[TodoList]):
-    BINDINGS = [("a", "add", "Add"), ("e", "edit", "Edit"), Binding("right,l", "app.focus_pane", show=False)]
+    BINDINGS = [
+        ("a", "add", "Add"),
+        ("e", "edit", "Edit"),
+        ("d", "delete", "Delete"),
+        Binding("right,l", "app.focus_pane", show=False),
+    ]
+
+    class Emptied(Message):
+        """The last list is gone, so no list is highlighted to show."""
 
     def load(self) -> list[TodoList]:
         return self.store.lists()
@@ -80,7 +99,9 @@ class ListsPane(RecordPane[TodoList]):
     def show(self, highlight: TodoList | None = None):
         """Reload, highlighting `highlight`, else the first list."""
         super().show(highlight)
-        if self.records and not highlight:
+        if not self.records:
+            self.post_message(self.Emptied())
+        elif not highlight:
             self.highlighted = 0
 
     def prompt(self, save: Callable[[str], object], name: str = ""):
@@ -93,6 +114,12 @@ class ListsPane(RecordPane[TodoList]):
     def action_edit(self):
         if todo_list := self.current:
             self.prompt(lambda name: self.show(self.store.rename_list(todo_list.id, name)), todo_list.name)
+
+    def action_delete(self):
+        if todo_list := self.current:
+            contents = [count(len(self.store.todos(todo_list.id)), "todo"), count(len(self.store.repeats(todo_list.id)), "repeat")]
+            question = f'Delete list "{todo_list.name}" with its {" and ".join(contents)}?'
+            self.delete(todo_list, question, self.store.delete_list)
 
 
 class ListContentsPane[T: Record](RecordPane[T]):
@@ -175,8 +202,7 @@ class TodosPane(ListContentsPane[Todo]):
 
     def action_delete(self):
         if todo := self.current:
-            self.store.delete_todo(todo.id)
-            self.show_without(todo)
+            self.delete(todo, f'Delete "{todo.text}"?', self.store.delete_todo)
 
     def action_shift(self, days: int):
         if todo := self.current:
@@ -203,7 +229,6 @@ class RepeatsPane(ListContentsPane[Repeat]):
             )
 
     def action_delete(self):
-        """Delete, keeping the todos it spawned."""
         if repeat := self.current:
-            self.store.delete_repeat(repeat.id)
-            self.show_without(repeat)
+            question = f'Delete repeat "{repeat.text}"? The todos it added stay.'
+            self.delete(repeat, question, self.store.delete_repeat)

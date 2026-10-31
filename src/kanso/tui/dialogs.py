@@ -10,6 +10,7 @@ from collections.abc import Callable
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
+from textual.content import Content
 from textual.screen import ModalScreen
 from textual.widgets import ContentSwitcher, Input, RadioButton, RadioSet, Static
 
@@ -128,6 +129,29 @@ class RepeatDialog(Dialog[dict]):
     def on_radio_set_changed(self, event: RadioSet.Changed):
         self.kind = event.pressed.id.removeprefix("kind-")
         self.fields.current = self.field_for(self.kind)
+
+
+class ConfirmDialog(ModalScreen[bool]):
+    """Asks `question`; dismisses with whether it was confirmed."""
+
+    BINDINGS = [Binding("y,enter", "answer(True)", "Yes"), Binding("n,escape", "answer(False)", "No")]
+    CSS = """
+    ConfirmDialog { align: center middle; }
+    ConfirmDialog > Vertical { width: 60; height: auto; border: round $error; background: $surface; padding: 0 1; }
+    ConfirmDialog .keys { color: $text-muted; margin-top: 1; }
+    """
+
+    def __init__(self, question: str):
+        super().__init__()
+        self.question = question
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Static(Content(self.question), id="question")
+            yield Static("y or enter: yes · n or escape: no", classes="keys")
+
+    def action_answer(self, yes: bool):
+        self.dismiss(yes)
 
 
 def clipboard_command() -> list[str] | None:

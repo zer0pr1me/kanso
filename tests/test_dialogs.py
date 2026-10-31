@@ -6,7 +6,7 @@ from conftest import notifications, run
 from kanso.core.models import Repeat
 from kanso.core.repeats import clean_rule
 from kanso.tui import dialogs
-from kanso.tui.dialogs import RepeatDialog, TextPrompt
+from kanso.tui.dialogs import ConfirmDialog, RepeatDialog, TextPrompt
 from kanso.tui.widgets import LabelSuggester
 
 
@@ -234,3 +234,22 @@ def test_copy_passes_the_text_to_the_tool(monkeypatch):
     monkeypatch.setattr(dialogs.subprocess, "run", lambda command, **options: calls.append((command, options["input"])))
     assert dialogs.copy(Recorder(), "key code")
     assert calls == [(["tool"], b"key code")]
+
+
+# Confirmation
+
+
+@pytest.mark.parametrize("keys, answer", [(["y"], True), (["enter"], True), (["n"], False), (["escape"], False), (["x", "n"], False)])
+def test_confirm_dialog_answers(keys, answer):
+    answers = []
+
+    class Asker(App):
+        def on_mount(self):
+            self.push_screen(ConfirmDialog('Delete "[b]x"?'), answers.append)
+
+    async def check(app, pilot):
+        assert str(app.screen.query_one("#question").render()) == 'Delete "[b]x"?'
+        await pilot.press(*keys)
+
+    run(Asker(), check)
+    assert answers == [answer]

@@ -13,7 +13,7 @@ from kanso.sync.transport import MemoryTransport
 from kanso.tui import app as app_module
 from kanso.tui.app import KansoApp
 from kanso.tui import dialogs
-from kanso.tui.dialogs import ConnectDialog, RepeatDialog, TextPrompt
+from kanso.tui.dialogs import ConfirmDialog, ConnectDialog, RepeatDialog, TextPrompt
 
 TODAY = date.today()
 TOMORROW = TODAY + timedelta(days=1)
@@ -186,7 +186,7 @@ def test_cursor_skips_date_titles(store, dated):
 # Keys act only where they apply
 
 
-@pytest.mark.parametrize("key", ["space", "number_sign", "d", "full_stop", "comma"])
+@pytest.mark.parametrize("key", ["space", "number_sign", "full_stop", "comma"])
 def test_todo_keys_do_nothing_elsewhere(store, inbox, key):
     async def check(app, pilot):
         await pilot.press(key)  # lists focused
@@ -200,7 +200,7 @@ def test_todo_keys_do_nothing_elsewhere(store, inbox, key):
     run(KansoApp(store), check)
 
 
-@pytest.mark.parametrize("pane, key", [("todos", "e"), ("repeats", "e"), ("repeats", "d"), ("lists", "e")])
+@pytest.mark.parametrize("pane, key", [(p, k) for p in ("lists", "todos", "repeats") for k in "ed"])
 def test_edit_and_delete_need_a_highlight(store, pane, key):
     async def check(app, pilot):
         if pane == "repeats":
@@ -257,6 +257,37 @@ def test_rename_list(store, inbox):
         assert prompts(app, "lists") == ["Job"] and prompts(app, "todos")[1:] == [label("a"), label("b")]
 
     run(KansoApp(store), check)
+
+
+@pytest.mark.parametrize("yes", ["y", "enter"])
+def test_delete_list_after_confirming_shows_the_next(store, inbox, yes):
+    store.add_repeat(inbox.id, "r")
+    work = store.add_list("Work")
+    store.add_todo(work.id, "report")
+
+    async def check(app, pilot):
+        await pilot.press("d")
+        question = str(app.screen.query_one("#question", Static).render())
+        assert question == 'Delete list "Inbox" with its 3 todos and 1 repeat?'
+        await pilot.press(yes)
+        assert prompts(app, "lists") == ["Work"] and highlighted(app, "lists") == "Work"
+        assert prompts(app, "todos") == ["Today", label("report")]
+
+    run(KansoApp(store), check)
+    assert [l.name for l in store.lists()] == ["Work"]
+
+
+def test_deleting_the_last_list_empties_the_panes(store):
+    store.add_repeat(store.add_list("Inbox").id, "r")
+
+    async def check(app, pilot):
+        await pilot.press("d", "y")
+        assert prompts(app, "lists") == prompts(app, "todos") == []
+        await pilot.press("r")
+        assert prompts(app, "repeats") == []
+
+    run(KansoApp(store), check)
+    assert store.lists() == []
 
 
 def test_first_list_then_todo(store):
@@ -357,7 +388,7 @@ def test_shift_date(store, inbox, key, days):
 )
 def test_delete_highlights_next_or_previous_as_shown(store, dated, start, shown, next_highlight):
     async def check(app, pilot):
-        await pilot.press("l", *["j"] * start, "d")
+        await pilot.press("l", *["j"] * start, "d", "y")
         assert prompts(app, "todos") == [s if len(s) > 1 else label(s) for s in shown]
         assert highlighted(app) == label(next_highlight)
 
@@ -368,10 +399,28 @@ def test_delete_last_todo(store):
     store.add_todo(store.add_list("Inbox").id, "a")
 
     async def check(app, pilot):
-        await pilot.press("l", "d")
+        await pilot.press("l", "d", "y")
         assert prompts(app, "todos") == [] and highlighted(app) is None
 
     run(KansoApp(store), check)
+
+
+@pytest.mark.parametrize("pane, question", [("todos", 'Delete "a"?'), ("repeats", 'Delete repeat "x"? The todos it added stay.')])
+@pytest.mark.parametrize("no", ["n", "escape"])
+def test_deleting_needs_confirmation(store, repeating, pane, question, no):
+    store.add_todo(repeating.id, "a", index=0)
+
+    async def check(app, pilot):
+        if pane == "repeats":
+            await pilot.press("r")
+        await pilot.press("l", "d")
+        assert isinstance(app.screen, ConfirmDialog)
+        assert str(app.screen.query_one("#question", Static).render()) == question
+        await pilot.press(no)
+        assert on_main_screen(app) and app.focused.id == pane
+
+    run(KansoApp(store), check)
+    assert texts(store, repeating.id) == ["a", "x", "y"] and len(store.repeats(repeating.id)) == 2
 
 
 # Labels
@@ -437,7 +486,7 @@ def test_edit_repeat(store, repeating, key):
 @pytest.mark.parametrize("start, next_highlight", [(0, "y"), (1, "x")])
 def test_delete_repeat_keeps_its_todos(store, repeating, start, next_highlight):
     async def check(app, pilot):
-        await open_repeats(pilot, *["j"] * start, "d")
+        await open_repeats(pilot, *["j"] * start, "d", "y")
         assert prompts(app, "repeats") == [highlighted(app, "repeats")] == [f"{next_highlight}  Daily "]
 
     run(KansoApp(store), check)

@@ -94,10 +94,11 @@ class KansoApp(App):
         return switcher.get_child_by_id(switcher.current, ListContentsPane)
 
     @on(OptionList.OptionHighlighted, "#lists")
+    @on(ListsPane.Emptied)
     def show_list(self):
-        """Show the highlighted list's contents; if it's the same list as before (redrawn),
-        keep their highlights."""
-        list_id = self.query_one(ListsPane).current.id
+        """Show the highlighted list's contents, if any; if it's the same list as before
+        (redrawn), keep their highlights."""
+        list_id = (current := self.query_one(ListsPane).current) and current.id
         for pane in self.query(ListContentsPane):
             same = pane.list_id == list_id
             pane.list_id = list_id
