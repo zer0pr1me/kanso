@@ -229,8 +229,16 @@ class Store:
         return self._save(apply_changes(todo, {"text": text, **fields}))
 
     def update_todo(self, todo_id: UUID, **changes) -> Todo:
-        """Set any of `text` (not blank), `done`, `scheduled_at`, `labels`; toggling `done` sets `completed_at`."""
-        return self._save(apply_changes(self._get(Todo, todo_id), changes))
+        """Set any of `text` (not blank), `done`, `scheduled_at`, `labels`; toggling `done` sets `completed_at`.
+        A repeating todo is titled by its repeat, so setting its `text` raises `ValueError` while the
+        repeat is live, and otherwise makes it an ordinary todo."""
+        todo = self._get(Todo, todo_id)
+        if "text" in changes and self.repeat_of(todo_id):
+            raise ValueError("Edit its repeat instead")
+        apply_changes(todo, changes)
+        if "text" in changes:
+            todo.repeat_id = None
+        return self._save(todo)
 
     def shift_todo(self, todo_id: UUID, days: int) -> Todo:
         """Move the scheduled date by `days`; an unscheduled todo counts as scheduled today."""
@@ -262,7 +270,8 @@ class Store:
         return repeat
 
     def update_repeat(self, repeat_id: UUID, **changes) -> Repeat:
-        """Set `text` and any rule fields, spawning today's todo if now due; changing the rule restarts it today."""
+        """Set `text` (which titles its todos too) and any rule fields, spawning today's todo if
+        now due; changing the rule restarts it today."""
         check_fields(changes, REPEAT_FIELDS)
         repeat = self._get(Repeat, repeat_id)
         updates = {"text": clean_text(changes.pop("text"))} if "text" in changes else {}
@@ -279,6 +288,12 @@ class Store:
         repeat = self._get(Repeat, repeat_id)
         repeat.deleted = True
         self._save(repeat)
+
+    def repeat_of(self, todo_id: UUID) -> Repeat | None:
+        """The live repeat that spawned the todo, if any."""
+        todo = self._get(Todo, todo_id)
+        repeat = todo.repeat_id and self.db.get(Repeat, todo.repeat_id)
+        return repeat if self._is_live(repeat) else None
 
     def spawn_repeats(self, day: date | None = None) -> list[Todo]:
         """Add the todo of each repeat matching `day` (default today), appended to its list,

@@ -181,8 +181,13 @@ class TodosPane(ListContentsPane[Todo]):
         self.prompt(lambda text: self.show(self.store.add_todo(self.list_id, text, index, **fields)))
 
     def action_edit(self):
-        if todo := self.current:
-            self.prompt(lambda text: self.show(self.store.update_todo(todo.id, text=text)), todo.text)
+        """Edit the text, or the repeat that spawned the todo, which sets it."""
+        if not (todo := self.current):
+            return
+        if repeat := self.store.repeat_of(todo.id):
+            self.app.edit_repeat(repeat)
+        else:
+            self.prompt(lambda text: self.show(self.store.update_todo(todo.id, text=text)), todo.title)
 
     def action_edit_labels(self):
         """Edit as space-separated words, completing ones already in use."""
@@ -202,7 +207,7 @@ class TodosPane(ListContentsPane[Todo]):
 
     def action_delete(self):
         if todo := self.current:
-            self.delete(todo, f'Delete "{todo.text}"?', self.store.delete_todo)
+            self.delete(todo, f'Delete "{todo.title}"?', self.store.delete_todo)
 
     def action_shift(self, days: int):
         if todo := self.current:

@@ -38,10 +38,10 @@ def chip(text: str, style: str) -> tuple[str, tuple[str, str]]:
 
 
 def todo_label(todo: Todo) -> Content:
-    """Checkbox and text, ↻ if spawned by a repeat, then each label as a `#label` chip."""
+    """Checkbox and title, ↻ if repeating, then each label as a `#label` chip."""
     repeat = " ↻" if todo.repeat_id else ""
     chips = [part for label in todo.labels for part in chip(f"#{label}", LABEL_STYLE)]
-    return Content.assemble(f"{'[x]' if todo.done else '[ ]'} {todo.text}{repeat}", *chips)
+    return Content.assemble(f"{'[x]' if todo.done else '[ ]'} {todo.title}{repeat}", *chips)
 
 
 def describe_rule(repeat: Repeat) -> str:

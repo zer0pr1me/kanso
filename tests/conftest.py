@@ -23,7 +23,7 @@ def todo_list(store):
 
 
 def texts(store, list_id) -> list[str]:
-    return [t.text for t in store.todos(list_id)]
+    return [t.title for t in store.todos(list_id)]
 
 
 def run(app, check):

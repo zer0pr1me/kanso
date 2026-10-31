@@ -136,6 +136,7 @@ OPERATIONS = {
         lambda s, id: s.shift_todo(id, 1),
         lambda s, id: s.move_todo(id, 0),
         lambda s, id: s.delete_todo(id),
+        lambda s, id: s.repeat_of(id),
     ],
     Repeat: [
         lambda s, id: s.update_repeat(id, text="x"),
@@ -394,6 +395,56 @@ def test_changing_rule_restarts_it_today(store, todo_list):
     assert (repeat.kind, repeat.interval, repeat.weekdays, repeat.start) == ("weekdays", 1, [2], date.today())
 
 
+def test_renaming_a_repeat_retitles_its_todos_without_writing_them(store, todo_list):
+    repeat = store.add_repeat(todo_list.id, "a")
+    store.add_repeat(todo_list.id, "o")
+    store.spawn_repeats(date.today() + timedelta(days=1))
+    store.update_todo(store.todos(todo_list.id)[0].id, done=True)
+    before = [(t.text, t.modified_at, dict(t.stamps)) for t in store.todos(todo_list.id)]
+    store.update_repeat(repeat.id, text="b")
+    assert texts(store, todo_list.id) == ["b", "o", "b", "o"]
+    assert [(t.text, t.modified_at, t.stamps) for t in store.todos(todo_list.id)] == before
+
+
+def test_repeating_todo_text_is_set_by_its_live_repeat_only(store, todo_list):
+    repeat = store.add_repeat(todo_list.id, "a")
+    [todo] = store.todos(todo_list.id)
+    assert store.repeat_of(todo.id) == repeat
+    with pytest.raises(ValueError):
+        store.update_todo(todo.id, text="b", done=True)
+    assert (todo.title, todo.done, todo.repeat_id) == ("a", False, repeat.id)
+    store.update_todo(todo.id, done=True, labels=["x"], scheduled_at=None)
+    assert (todo.done, todo.labels, todo.scheduled_at, todo.repeat_id) == (True, ["x"], None, repeat.id)
+
+
+def test_todo_of_a_deleted_repeat_keeps_its_last_title_until_edited(store, todo_list):
+    repeat = store.add_repeat(todo_list.id, "a")
+    [todo] = store.todos(todo_list.id)
+    store.update_repeat(repeat.id, text="b")
+    store.delete_repeat(repeat.id)
+    assert (store.repeat_of(todo.id), todo.title) == (None, "b")
+    with pytest.raises(ValueError):
+        store.update_todo(todo.id, text=" ")
+    assert todo.repeat_id == repeat.id
+    store.update_todo(todo.id, text="c")
+    assert (todo.title, todo.repeat_id) == ("c", None)
+    assert todo.stamps["repeat_id"] == todo.stamps["text"] == todo.modified_at
+
+
+def test_todo_of_a_missing_repeat_shows_its_own_text(store, todo_list):
+    """As when sync delivers a repeating todo before its repeat."""
+    todo = store._save(Todo(list_id=todo_list.id, repeat_id=uuid4(), text="a", position="V"))
+    assert (store.repeat_of(todo.id), todo.title) == (None, "a")
+    store.update_todo(todo.id, text="b")
+    assert (todo.title, todo.repeat_id) == ("b", None)
+
+
+def test_ordinary_todo_title_is_its_text(store, todo_list):
+    todo = store.add_todo(todo_list.id, "a")
+    assert (store.repeat_of(todo.id), todo.title) == (None, "a")
+    assert Todo(list_id=todo_list.id, repeat_id=uuid4(), text="t", position="V").title == "t"  # outside a session
+
+
 def test_delete_repeat_tombstones_it_keeping_its_todos(store, todo_list):
     repeat = store.add_repeat(todo_list.id, "a")
     store.delete_repeat(repeat.id)
@@ -446,7 +497,7 @@ def test_spawn_is_idempotent_and_skips_changed_or_deleted_occurrences(store, tod
     store.add_repeat(todo_list.id, "a")
     assert store.spawn_repeats() == []
     [todo] = store.todos(todo_list.id)
-    store.update_todo(todo.id, text="b", done=True)
+    store.update_todo(todo.id, done=True)
     store.shift_todo(todo.id, 1)
     assert store.spawn_repeats() == []
     store.delete_todo(todo.id)

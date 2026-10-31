@@ -9,6 +9,7 @@ from datetime import date
 from uuid import UUID, uuid4, uuid5
 
 from sqlalchemy import JSON, Column
+from sqlalchemy.orm import object_session
 from sqlmodel import Field, SQLModel
 
 
@@ -42,6 +43,10 @@ class Repeat(Record, table=True):
 
 
 class Todo(Record, table=True):
+    """A repeating todo, one spawned by a repeat (`repeat_id`), is titled by the repeat, even
+    a deleted one: its own `text` is a copy from spawning, shown only if the repeat is missing,
+    as when sync delivers the todo first. Other todos are titled by their `text`."""
+
     list_id: UUID = Field(foreign_key="todolist.id", index=True)
     repeat_id: UUID | None = Field(default=None, foreign_key="repeat.id", index=True)
     text: str = ""
@@ -50,6 +55,12 @@ class Todo(Record, table=True):
     scheduled_at: date | None = None
     completed_at: date | None = None
     labels: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+
+    @property
+    def title(self) -> str:
+        session = object_session(self)
+        repeat = session and self.repeat_id and session.get(Repeat, self.repeat_id)
+        return repeat.text if repeat else self.text
 
 
 class Device(Record, table=True):

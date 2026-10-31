@@ -1,13 +1,15 @@
 """Replicas converging through digests, exported rows and merges, with no network."""
 
 import json
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 
 from kanso.core.migrations import current_version
 from kanso.core.store import Store
 from kanso.core.sync import wanted
+
+TOMORROW = date.today() + timedelta(days=1)
 
 
 @pytest.fixture
@@ -27,7 +29,7 @@ def sync(a: Store, b: Store) -> tuple[int, int]:
 
 def contents(store: Store) -> list:
     return [
-        (l.name, [(t.text, t.done, t.labels) for t in store.todos(l.id)], [r.text for r in store.repeats(l.id)])
+        (l.name, [(t.title, t.done, t.labels) for t in store.todos(l.id)], [r.text for r in store.repeats(l.id)])
         for l in store.lists()
     ] + [d.key for d in store.devices()]
 
@@ -84,6 +86,42 @@ def test_loaded_objects_see_merged_values(stores):
     a.update_todo(todo.id, text="oat milk")
     sync(a, b)
     assert loaded.text == "oat milk"
+
+
+def test_repeat_renames_retitle_its_todos_on_every_replica(stores):
+    a, b = stores
+    inbox = a.add_list("Inbox")
+    repeat = a.add_repeat(inbox.id, "water")
+    sync(a, b)
+    a.update_repeat(repeat.id, text="water plants")
+    b.spawn_repeats(TOMORROW)  # concurrently spawned with the old text
+    assert sync(a, b) == (1, 1)  # b's new todo / a's repeat
+    assert contents(a) == contents(b)
+    assert [t.title for t in b.todos(inbox.id)] == ["water plants"] * 2
+    assert a.digest() == b.digest()
+
+
+def test_repeating_todo_arriving_before_its_repeat_shows_its_own_text(stores):
+    a, b = stores
+    inbox = a.add_list("Inbox")
+    repeat = a.add_repeat(inbox.id, "water")
+    a.update_repeat(repeat.id, text="water plants")
+    rows = a.export(wanted(a.digest(), b.digest()))
+    b.merge_rows({k: v for k, v in rows.items() if k != "repeat"}, current_version())
+    assert [t.title for t in b.todos(inbox.id)] == ["water"]
+    sync(a, b)
+    assert [t.title for t in b.todos(inbox.id)] == ["water plants"]
+
+
+def test_a_todo_made_ordinary_stays_so_on_every_replica(stores):
+    a, b = stores
+    inbox = a.add_list("Inbox")
+    repeat = a.add_repeat(inbox.id, "water")
+    a.delete_repeat(repeat.id)
+    [todo] = a.todos(inbox.id)
+    a.update_todo(todo.id, text="water once more")
+    sync(a, b)
+    assert [(t.title, t.repeat_id) for t in b.todos(inbox.id)] == [("water once more", None)]
 
 
 def test_merging_moves_the_clock_past_remote_stamps(stores):

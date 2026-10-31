@@ -483,6 +483,21 @@ def test_edit_repeat(store, repeating, key):
     assert [r.text for r in store.repeats(repeating.id)] == ["x", "z"]
 
 
+@pytest.mark.parametrize("key", ["e", "enter"])
+def test_editing_a_repeats_todo_edits_the_repeat(store, repeating, key):
+    async def check(app, pilot):
+        await pilot.press("l", "j", key)
+        assert app.query_one("#panes", ContentSwitcher).current == "repeats"
+        assert isinstance(app.screen, RepeatDialog) and app.screen.text.value == "y"
+        await type_in_prompt(pilot, "z", clear=True)
+        assert app.focused.id == "repeats" and highlighted(app, "repeats") == "z  Daily "
+        await pilot.press("r")
+        assert prompts(app, "todos")[1:] == [label("x ↻"), label("z ↻")]
+
+    run(KansoApp(store), check)
+    assert texts(store, repeating.id) == ["x", "z"]
+
+
 @pytest.mark.parametrize("start, next_highlight", [(0, "y"), (1, "x")])
 def test_delete_repeat_keeps_its_todos(store, repeating, start, next_highlight):
     async def check(app, pilot):

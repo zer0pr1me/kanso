@@ -42,7 +42,7 @@ async def eventually(condition, timeout: float = 2):
 
 
 def texts(node: SyncNode) -> list[str]:
-    return sorted(t.text for l in node.store.lists() for t in node.store.todos(l.id))
+    return sorted(t.title for l in node.store.lists() for t in node.store.todos(l.id))
 
 
 async def running(*nodes: SyncNode) -> list[asyncio.Task]:

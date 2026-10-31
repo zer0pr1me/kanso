@@ -6,6 +6,7 @@ from textual.app import App, ComposeResult
 from textual.containers import Horizontal
 from textual.widgets import ContentSwitcher, Footer, Header, OptionList
 
+from kanso.core.models import Repeat
 from kanso.core.store import Store
 from kanso.sync import node
 from kanso.sync.node import SyncNode
@@ -119,11 +120,21 @@ class KansoApp(App):
         """Switch between the list's todos and repeats, reloading the one shown (repeats spawn
         todos) and keeping focus on that side."""
         switcher = self.query_one("#panes", ContentSwitcher)
-        switcher.current = "todos" if switcher.current == "repeats" else "repeats"
-        pane = self.shown_pane()
+        pane = self.switch_pane("todos" if switcher.current == "repeats" else "repeats")
         pane.show(pane.current)
         if not self.query_one(ListsPane).has_focus:
             self.action_focus_pane()
+
+    def switch_pane(self, pane_id: str) -> ListContentsPane:
+        self.query_one("#panes", ContentSwitcher).current = pane_id
+        return self.shown_pane()
+
+    def edit_repeat(self, repeat: Repeat):
+        """Show the repeats with `repeat` highlighted and edit it."""
+        pane = self.switch_pane("repeats")
+        pane.show(repeat)
+        pane.focus()
+        pane.action_edit()
 
 
 def main():
