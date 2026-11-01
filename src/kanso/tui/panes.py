@@ -5,6 +5,7 @@ just those. Panes save through dialogs and redraw themselves from the store.
 """
 
 from collections.abc import Callable, Iterator
+from datetime import date
 from uuid import UUID
 
 from textual.binding import Binding
@@ -13,7 +14,7 @@ from textual.message import Message
 from textual.widgets.option_list import Option
 
 from kanso.core.models import Record, Repeat, Todo, TodoList
-from kanso.core.order import sections
+from kanso.core.order import done_before, sections
 from kanso.core.store import NAME_MAX, NotFound, Store
 from kanso.tui.dialogs import ConfirmDialog, RepeatDialog, TextPrompt
 from kanso.tui.format import repeat_label, section_title, todo_label
@@ -51,11 +52,11 @@ class RecordPane[T: Record](VimOptionList):
         return self.records
 
     def show(self, highlight: T | None = None):
-        """Reload, highlighting `highlight` if given and still there (sync may have deleted it)."""
+        """Reload, highlighting `highlight` if given and still shown (sync may have deleted it)."""
         self.records = self.load()
         self.clear_options()
         self.add_options(self.make_options())
-        if highlight and any(r.id == highlight.id for r in self.records):
+        if highlight and any(r.id == highlight.id for r in self.shown()):
             self.highlighted = self.get_option_index(str(highlight.id))
 
     def delete(self, record: T, question: str, delete: Callable[[UUID], object]):
@@ -144,8 +145,13 @@ class ListContentsPane[T: Record](RecordPane[T]):
         self.action_edit()
 
 
+SHOW_OLD_DONE = "show_old_done"
+"""Setting of this replica: if set, todos done before today are shown too."""
+
+
 class TodosPane(ListContentsPane[Todo]):
-    """Todos under a title per scheduled date; titles are disabled, so the cursor skips them."""
+    """Todos under a title per scheduled date; titles are disabled, so the cursor skips them.
+    Todos done before today are hidden unless `f` shows them; `records` keeps them all."""
 
     BINDINGS = [
         ("a", "add", "Add"),
@@ -155,18 +161,36 @@ class TodosPane(ListContentsPane[Todo]):
         ("d", "delete", "Delete"),
         Binding("full_stop", "shift(1)", "+1 day", key_display="."),
         Binding("comma", "shift(-1)", "-1 day", key_display=","),
+        ("f", "toggle_old_done", "Old done"),
     ]
 
     def fetch(self, list_id: UUID) -> list[Todo]:
         return self.store.todos(list_id)
 
+    def visible(self) -> list[Todo]:
+        if self.store.meta(SHOW_OLD_DONE):
+            return self.records
+        today = date.today()
+        return [t for t in self.records if not done_before(t, today)]
+
     def make_options(self) -> Iterator[Option]:
-        for day, todos in sections(self.records):
+        visible = self.visible()
+        for day, todos in sections(visible):
             yield Option(Content(section_title(day)), disabled=True)
             yield from (Option(todo_label(t), str(t.id)) for t in todos)
+        if hidden := len(self.records) - len(visible):
+            note = f"{count(hidden, 'todo')} done before today hidden · f shows"
+            yield Option(Content.styled(note, "not bold dim italic"), disabled=True)
 
     def shown(self) -> list[Todo]:
-        return [t for _, todos in sections(self.records) for t in todos]
+        return [t for _, todos in sections(self.visible()) for t in todos]
+
+    def action_toggle_old_done(self):
+        """Show or hide todos done before today, keeping the highlight if it stays shown."""
+        self.store.set_meta(SHOW_OLD_DONE, None if self.store.meta(SHOW_OLD_DONE) else "1")
+        self.show(self.current)
+        if self.highlighted is None:
+            self.action_first()
 
     def prompt(self, save: Callable[[str], object], value: str = "", **options):
         self.app.push_screen(TextPrompt(save, value, **options))

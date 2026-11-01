@@ -17,6 +17,7 @@ from kanso.tui.dialogs import ConfirmDialog, ConnectDialog, RepeatDialog, TextPr
 
 TODAY = date.today()
 TOMORROW = TODAY + timedelta(days=1)
+YESTERDAY = TODAY - timedelta(days=1)
 
 
 def label(text: str, done: bool = False) -> str:
@@ -357,6 +358,63 @@ def test_blank_todo_text_is_refused(store, inbox):
 
     run(KansoApp(store), check)
     assert texts(store, inbox.id) == ["a", "b"]
+
+
+@pytest.fixture
+def old_done(store):
+    """Inbox with "old" done yesterday, "late" scheduled yesterday but done today, and "open"."""
+    todo_list = store.add_list("Inbox")
+    for text in ["old", "late"]:
+        todo = store.add_todo(todo_list.id, text, scheduled_at=YESTERDAY, done=True)
+    store.add_todo(todo_list.id, "open")
+    old = store.todos(todo_list.id)[0]
+    old.completed_at = YESTERDAY
+    store._save(old)
+    return todo_list
+
+
+def test_todos_done_before_today_are_hidden_until_f(store, old_done):
+    shown = ["Yesterday", label("old", done=True), label("late", done=True), "Today", label("open")]
+    hidden = ["Yesterday", label("late", done=True), "Today", label("open"), "1 todo done before today hidden · f shows"]
+
+    async def check(app, pilot):
+        assert prompts(app, "todos") == hidden
+        await pilot.press("l", "f")
+        assert prompts(app, "todos") == shown and highlighted(app) == label("late", done=True)
+        await pilot.press("k", "f")  # "old" is hidden away from under the highlight
+        assert prompts(app, "todos") == hidden and highlighted(app) == label("late", done=True)
+        await pilot.press("f")
+
+    run(KansoApp(store), check)
+    assert store.meta("show_old_done") == "1"
+
+    async def remembered(app, pilot):
+        assert prompts(app, "todos") == shown
+
+    run(KansoApp(store), remembered)
+
+
+def test_add_below_a_todo_counts_hidden_ones(store, old_done):
+    async def check(app, pilot):
+        await pilot.press("l", "a")
+        await type_in_prompt(pilot, "new")
+        await pilot.press("f")
+        assert prompts(app, "todos")[1:4] == [label("old", done=True), label("late", done=True), label("new")]
+
+    run(KansoApp(store), check)
+    assert texts(store, old_done.id) == ["old", "late", "new", "open"]
+
+
+def test_highlight_of_a_hidden_todo_is_dropped_on_redraw(store, old_done):
+    async def check(app, pilot):
+        await pilot.press("l", "f", "k")
+        assert highlighted(app) == label("old", done=True)
+        store.set_meta("show_old_done", None)  # as another kanso window on this data dir would
+        pane = app.query_one("#todos")
+        pane.show(pane.current)
+        assert highlighted(app) is None
+
+    run(KansoApp(store), check)
 
 
 def test_space_toggles_done_and_autosorts(store, inbox):
