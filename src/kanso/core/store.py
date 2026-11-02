@@ -15,14 +15,28 @@ from kanso.core import position
 from kanso.core.clock import Clock
 from kanso.core.merge import merge
 from kanso.core.migrations import Rows, migrate, upgrade
-from kanso.core.models import SYNCED_MODELS, UNSTAMPED, Device, Meta, Record, Repeat, Todo, TodoList, device_id
+from kanso.core.models import (
+    SYNCED_MODELS,
+    UNSTAMPED,
+    Device,
+    Habit,
+    HabitDay,
+    Meta,
+    Record,
+    Repeat,
+    Scheduled,
+    Todo,
+    TodoList,
+    device_id,
+)
 from kanso.core.repeats import RULE_FIELDS, clean_rule, occurs_on
 from kanso.core.sync import Digest, decode, encode, newest_stamp, stamps_hash
 
 NAME_MAX = 200
 LABEL_MAX = 50
 TODO_FIELDS = {"text", "done", "scheduled_at", "labels"}
-REPEAT_FIELDS = {"text"} | RULE_FIELDS
+TEMPLATE_FIELDS = {"text"} | RULE_FIELDS
+HABIT_STATES = {"success", "failure", None}
 
 
 class NotFound(LookupError):
@@ -229,7 +243,7 @@ class Store:
         return self._move(self._get(TodoList, list_id), self.lists(), index)
 
     def delete_list(self, list_id: UUID):
-        """Tombstone it, which also hides its todos and repeats."""
+        """Tombstone it, which also hides its todos, repeats, habits and habit days."""
         todo_list = self._get(TodoList, list_id)
         todo_list.deleted = True
         self._save(todo_list)
@@ -291,9 +305,63 @@ class Store:
         return self._move(todo, self.todos(todo.list_id), index)
 
     def delete_todo(self, todo_id: UUID):
-        todo = self._get(Todo, todo_id)
-        todo.deleted = True
-        self._save(todo)
+        self._delete(Todo, todo_id)
+
+    # Templates: repeats spawn todos, habits spawn habit days (see `models.Scheduled`)
+
+    def _add_template[T: Scheduled](self, model: type[T], list_id: UUID, text: str, kind: str, rule: dict) -> T:
+        pos = self._position_at(self._in_list(model, list_id), None)
+        template = self._save(model(list_id=list_id, text=clean_text(text), position=pos, **clean_rule(kind, **rule)))
+        self._spawn(template, date.today())
+        return template
+
+    def _update_template[T: Scheduled](self, model: type[T], id: UUID, changes: dict) -> T:
+        check_fields(changes, TEMPLATE_FIELDS)
+        template = self._get(model, id)
+        updates = {"text": clean_text(changes.pop("text"))} if "text" in changes else {}
+        current = {field: getattr(template, field) for field in RULE_FIELDS}
+        if (rule := clean_rule(**{**current, **changes})) != current:
+            updates |= {**rule, "start": date.today()}
+        template.sqlmodel_update(updates)
+        self._save(template)
+        self._spawn(template, date.today())
+        return template
+
+    def _move_template[T: Scheduled](self, model: type[T], id: UUID, index: int) -> T:
+        template = self._get(model, id)
+        return self._move(template, self._in_list(model, template.list_id), index)
+
+    def _delete(self, model: type[Record], id: UUID):
+        record = self._get(model, id)
+        record.deleted = True
+        self._save(record)
+
+    def spawn(self, day: date | None = None) -> list[Todo | HabitDay]:
+        """Spawn what's due by `day` (default today): each repeat's todo for `day`, and each
+        habit's days since its start. Spawned ids derive from the template and day, so replicas
+        spawning the same one agree on it, and a deleted one is never spawned again."""
+        day = day or date.today()
+        templates = [*self._live(Repeat), *self._live(Habit)]
+        return [spawned for template in templates for spawned in self._spawn(template, day)]
+
+    def _spawn(self, template: Scheduled, day: date) -> list[Todo | HabitDay]:
+        if isinstance(template, Repeat):
+            days = [day]
+        else:
+            days = [template.start + timedelta(days=n) for n in range((day - template.start).days + 1)]
+        spawned = []
+        for due in days:
+            id = uuid5(template.id, due.isoformat())
+            model = Todo if isinstance(template, Repeat) else HabitDay
+            if not occurs_on(template, due) or self.db.get(model, id):
+                continue
+            fields = dict(id=id, list_id=template.list_id, text=template.text)
+            if model is Todo:
+                pos = self._position_at(self.todos(template.list_id), None)
+                spawned.append(self._save(Todo(**fields, repeat_id=template.id, position=pos, scheduled_at=due)))
+            else:
+                spawned.append(self._save(HabitDay(**fields, habit_id=template.id, position=template.position, day=due)))
+        return spawned
 
     # Repeats
 
@@ -302,35 +370,20 @@ class Store:
 
     def add_repeat(self, list_id: UUID, text: str, kind: str = "days", **rule) -> Repeat:
         """Append to the list's repeats, spawning today's todo if due; `rule` as in `repeats.clean_rule`."""
-        pos = self._position_at(self.repeats(list_id), None)
-        repeat = self._save(Repeat(list_id=list_id, text=clean_text(text), position=pos, **clean_rule(kind, **rule)))
-        self._spawn(repeat, date.today())
-        return repeat
+        return self._add_template(Repeat, list_id, text, kind, rule)
 
     def update_repeat(self, repeat_id: UUID, **changes) -> Repeat:
         """Set `text` (which titles its todos too) and any rule fields, spawning today's todo if
         now due; changing the rule restarts it today."""
-        check_fields(changes, REPEAT_FIELDS)
-        repeat = self._get(Repeat, repeat_id)
-        updates = {"text": clean_text(changes.pop("text"))} if "text" in changes else {}
-        current = {field: getattr(repeat, field) for field in RULE_FIELDS}
-        if (rule := clean_rule(**{**current, **changes})) != current:
-            updates |= {**rule, "start": date.today()}
-        repeat.sqlmodel_update(updates)
-        self._save(repeat)
-        self._spawn(repeat, date.today())
-        return repeat
+        return self._update_template(Repeat, repeat_id, changes)
 
     def move_repeat(self, repeat_id: UUID, index: int) -> Repeat:
         """Move to `index` among its list's repeats (as if it were removed first)."""
-        repeat = self._get(Repeat, repeat_id)
-        return self._move(repeat, self.repeats(repeat.list_id), index)
+        return self._move_template(Repeat, repeat_id, index)
 
     def delete_repeat(self, repeat_id: UUID):
         """Tombstone it; the todos it spawned stay."""
-        repeat = self._get(Repeat, repeat_id)
-        repeat.deleted = True
-        self._save(repeat)
+        self._delete(Repeat, repeat_id)
 
     def repeat_of(self, todo_id: UUID) -> Repeat | None:
         """The live repeat that spawned the todo, if any."""
@@ -338,19 +391,51 @@ class Store:
         repeat = todo.repeat_id and self.db.get(Repeat, todo.repeat_id)
         return repeat if self._is_live(repeat) else None
 
-    def spawn_repeats(self, day: date | None = None) -> list[Todo]:
-        """Add the todo of each repeat matching `day` (default today), appended to its list,
-        unless that occurrence was already spawned, even if since deleted. Occurrence ids
-        derive from the repeat and day, so replicas spawning the same one agree on it."""
-        day = day or date.today()
-        return [todo for repeat in self._live(Repeat) if (todo := self._spawn(repeat, day))]
+    # Habits
 
-    def _spawn(self, repeat: Repeat, day: date) -> Todo | None:
-        id = uuid5(repeat.id, day.isoformat())
-        if not occurs_on(repeat, day) or self.db.get(Todo, id):
-            return None
-        pos = self._position_at(self.todos(repeat.list_id), None)
-        return self._save(Todo(id=id, list_id=repeat.list_id, repeat_id=repeat.id, text=repeat.text, position=pos, scheduled_at=day))
+    def habits(self, list_id: UUID) -> list[Habit]:
+        return self._in_list(Habit, list_id)
+
+    def add_habit(self, list_id: UUID, text: str, kind: str = "days", **rule) -> Habit:
+        """Append to the list's habits, spawning today's day if due; `rule` as in `repeats.clean_rule`."""
+        return self._add_template(Habit, list_id, text, kind, rule)
+
+    def update_habit(self, habit_id: UUID, **changes) -> Habit:
+        """Set `text` (which titles its days too) and any rule fields; changing the rule
+        restarts it today, so it has no days from before."""
+        return self._update_template(Habit, habit_id, changes)
+
+    def move_habit(self, habit_id: UUID, index: int) -> Habit:
+        """Move to `index` among its list's habits (as if it were removed first), and so its days."""
+        return self._move_template(Habit, habit_id, index)
+
+    def delete_habit(self, habit_id: UUID):
+        """Tombstone it; its days stay."""
+        self._delete(Habit, habit_id)
+
+    def habit_days(self, list_id: UUID) -> list[HabitDay]:
+        """Newest day first; within a day in its habits' order (a deleted habit's by the day's own position)."""
+        order = {habit.id: habit.position for habit in self.habits(list_id)}
+        days = self._in_list(HabitDay, list_id)
+        return sorted(days, key=lambda d: (-d.day.toordinal(), order.get(d.habit_id, d.position), str(d.id)))
+
+    def mark_habit_day(self, day_id: UUID, state: str | None) -> HabitDay:
+        """Mark a day that's over a `"success"` or `"failure"`, or unchecked again with `None`."""
+        if state not in HABIT_STATES:
+            raise ValueError(f"A habit day is a success, a failure or unchecked, not {state!r}")
+        habit_day = self._get(HabitDay, day_id)
+        if habit_day.day >= date.today():
+            raise ValueError("Habits can only be marked once the day is over")
+        habit_day.state = state
+        return self._save(habit_day)
+
+    def delete_habit_day(self, day_id: UUID):
+        self._delete(HabitDay, day_id)
+
+    def habit_of(self, day_id: UUID) -> Habit | None:
+        """The live habit of the day, if any."""
+        habit = self.db.get(Habit, self._get(HabitDay, day_id).habit_id)
+        return habit if self._is_live(habit) else None
 
     # Devices
 

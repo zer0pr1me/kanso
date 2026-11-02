@@ -14,7 +14,7 @@ from textual.content import Content
 from textual.screen import ModalScreen
 from textual.widgets import ContentSwitcher, Input, RadioButton, RadioSet, Static
 
-from kanso.core.models import Repeat
+from kanso.core.models import Repeat, Scheduled
 from kanso.core.store import Store
 from kanso.sync.node import SyncNode
 from kanso.sync.protocol import CODE_TTL, new_code
@@ -91,11 +91,12 @@ class RepeatDialog(Dialog[dict]):
     RepeatDialog ContentSwitcher, RepeatDialog SelectionList { height: auto; }
     """
 
-    def __init__(self, save: Callable[[dict], object], repeat: Repeat | None = None):
+    def __init__(self, save: Callable[[dict], object], template: Scheduled | None = None, placeholder: str = "Repeating todo"):
+        """Edits `template`, a repeat or habit, else asks for a new one."""
         super().__init__(save)
-        r = repeat or Repeat(text="", position="")
+        r = template or Repeat(text="", position="")
         self.kind = kind = "daily" if r.kind == "days" and r.interval == 1 else r.kind
-        self.text = Input(r.text, placeholder="Repeating todo")
+        self.text = Input(r.text, placeholder=placeholder)
         self.kinds = VimRadioSet(*(RadioButton(label, kind == k, id=f"kind-{k}") for k, label in REPEAT_KINDS.items()))
         self.interval = Input(str(max(r.interval, 2)), placeholder="Days", restrict=r"[0-9]*", id="days")
         days = enumerate(calendar.day_abbr)

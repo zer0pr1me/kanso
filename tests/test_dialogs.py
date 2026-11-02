@@ -3,7 +3,7 @@ from textual.app import App
 from textual.widgets import Input
 
 from conftest import notifications, run
-from kanso.core.models import Repeat
+from kanso.core.models import Habit, Repeat
 from kanso.core.repeats import clean_rule
 from kanso.tui import dialogs
 from kanso.tui.dialogs import ConfirmDialog, RepeatDialog, TextPrompt
@@ -253,3 +253,13 @@ def test_confirm_dialog_answers(keys, answer):
 
     run(Asker(), check)
     assert answers == [answer]
+
+
+def test_repeat_dialog_edits_habits_too():
+    habit = Habit(text="Read", position="V", **clean_rule("days", interval=3))
+
+    async def check(app, pilot):
+        dialog = app.dialog
+        assert (dialog.text.placeholder, dialog.text.value, dialog.kind, dialog.interval.value) == ("Habit", "Read", "days", "3")
+
+    run(Host(lambda save: RepeatDialog(save, habit, placeholder="Habit")), check)

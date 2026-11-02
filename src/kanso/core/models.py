@@ -30,16 +30,24 @@ class TodoList(Record, table=True):
     name: str
 
 
-class Repeat(Record, table=True):
-    """Spawns a todo on each day its rule matches; see `repeats.py`."""
+class Scheduled(Record):
+    """A template in a list that spawns an instance on each day its rule matches; see `repeats.py`."""
 
     list_id: UUID = Field(foreign_key="todolist.id", index=True)
     text: str
     kind: str = "days"
     interval: int = 1
-    weekdays: list[int] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
-    monthdays: list[int] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    weekdays: list[int] = Field(default_factory=list, sa_type=JSON, nullable=False)
+    monthdays: list[int] = Field(default_factory=list, sa_type=JSON, nullable=False)
     start: date = Field(default_factory=date.today)
+
+
+class Repeat(Scheduled, table=True):
+    """Spawns a todo on its days."""
+
+
+class Habit(Scheduled, table=True):
+    """Spawns a habit day on its days, from `start` on, missed ones included."""
 
 
 class Todo(Record, table=True):
@@ -63,6 +71,24 @@ class Todo(Record, table=True):
         return repeat.text if repeat else self.text
 
 
+class HabitDay(Record, table=True):
+    """One day of a habit, unchecked until marked a `success` or `failure` once it's over. Its
+    `day` never changes. Titled by its habit, even a deleted one; `text`, a copy from spawning,
+    shows only if the habit is missing."""
+
+    list_id: UUID = Field(foreign_key="todolist.id", index=True)
+    habit_id: UUID = Field(foreign_key="habit.id", index=True)
+    text: str
+    day: date
+    state: str | None = None
+
+    @property
+    def title(self) -> str:
+        session = object_session(self)
+        habit = session and session.get(Habit, self.habit_id)
+        return habit.text if habit else self.text
+
+
 class Device(Record, table=True):
     """A replica of this network: its node `key` (public key) is trusted to sync. The id
     derives from the key (`device_id`), so networks that both know a device merge its row."""
@@ -78,7 +104,7 @@ def device_id(key: str) -> UUID:
     return uuid5(DEVICE_NAMESPACE, key)
 
 
-SYNCED_MODELS = (TodoList, Repeat, Todo, Device)
+SYNCED_MODELS = (TodoList, Repeat, Habit, Todo, HabitDay, Device)
 """The tables replicas exchange, parents first."""
 
 UNSTAMPED = {"id", "modified_at", "stamps"}

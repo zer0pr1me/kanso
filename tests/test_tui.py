@@ -148,7 +148,7 @@ def test_leaving_a_pane_focuses_lists(store, inbox, key):
 
 def test_r_toggles_panes_keeping_focus_side(store, repeating):
     async def check(app, pilot):
-        switcher = app.query_one("#panes", ContentSwitcher)
+        switcher = app.query_one("#top", ContentSwitcher)
         await pilot.press("r")
         assert switcher.current == "repeats" and app.focused.id == "lists"
         assert prompts(app, "repeats") == ["x  Daily ", "y  Daily "]
@@ -201,23 +201,25 @@ def test_todo_keys_do_nothing_elsewhere(store, inbox, key):
     run(KansoApp(store), check)
 
 
-@pytest.mark.parametrize("pane, key", [(p, k) for p in ("lists", "todos", "repeats") for k in "ed"])
-def test_edit_and_delete_need_a_highlight(store, pane, key):
+@pytest.mark.parametrize(
+    "pane, key", [(p, k) for p in ("lists", "todos", "repeats", "days", "habits") for k in "ed"] + [("days", "space"), ("days", "x")]
+)
+def test_edit_delete_and_mark_need_a_highlight(store, pane, key):
     async def check(app, pilot):
-        if pane == "repeats":
-            await pilot.press("r")
+        if pane in ("repeats", "habits"):
+            app.show_pane(pane)
         app.query_one(f"#{pane}").focus()
         await pilot.press(key)
-        assert on_main_screen(app)
+        assert on_main_screen(app) and not notifications(app)
 
     run(KansoApp(store), check)
 
 
-@pytest.mark.parametrize("pane", ["todos", "repeats"])
+@pytest.mark.parametrize("pane", ["todos", "repeats", "days", "habits"])
 def test_add_needs_a_list(store, pane):
     async def check(app, pilot):
-        if pane == "repeats":
-            await pilot.press("r")
+        if pane != "todos":
+            app.show_pane(pane)
         app.query_one(f"#{pane}").focus()
         await pilot.press("a")
         assert on_main_screen(app)
@@ -656,7 +658,7 @@ def test_edit_repeat(store, repeating, key):
 def test_editing_a_repeats_todo_edits_the_repeat(store, repeating, key):
     async def check(app, pilot):
         await pilot.press("l", "j", key)
-        assert app.query_one("#panes", ContentSwitcher).current == "repeats"
+        assert app.query_one("#top", ContentSwitcher).current == "repeats"
         assert isinstance(app.screen, RepeatDialog) and app.screen.text.value == "y"
         await type_in_prompt(pilot, "z", clear=True)
         assert app.focused.id == "repeats" and highlighted(app, "repeats") == "z  Daily "
@@ -819,6 +821,220 @@ def test_remote_deletion_of_the_shown_list_empties_the_panes(store, inbox, netwo
         remote.store.delete_list(inbox.id)
         await eventually(lambda: prompts(app, "lists") == [])
         assert prompts(app, "todos") == []
+        await remote.transport.close()
+
+    run(KansoApp(store, sync_over(network)), check)
+
+
+# Habits
+
+
+def start_habit(store, todo_list, text: str, days_ago: int):
+    """A daily habit started `days_ago`, with its days backfilled."""
+    habit = store.add_habit(todo_list.id, text)
+    habit.start = TODAY - timedelta(days=days_ago)
+    store._save(habit)
+    store.spawn()
+    return habit
+
+
+@pytest.fixture
+def habitual(store):
+    """Inbox with todo "a", and daily habits Read (for 10 days) and Run (since yesterday)."""
+    todo_list = store.add_list("Inbox")
+    store.add_todo(todo_list.id, "a")
+    start_habit(store, todo_list, "Read", 9)
+    start_habit(store, todo_list, "Run", 1)
+    return todo_list
+
+
+def mark(state=None) -> str:
+    return {None: "[ ]", "success": "[✓]", "failure": "[✗]"}[state]
+
+
+def focus_day(app, prompt: str, nth: int = 0):
+    """Focus the habit days, highlighting the `nth` option reading `prompt`."""
+    days = app.query_one("#days", OptionList)
+    days.focus()
+    days.highlighted = [i for i, p in enumerate(prompts(app, "days")) if p == prompt][nth]
+
+
+def states(store, todo_list) -> list[tuple[str, int, str | None]]:
+    return [(d.title, (TODAY - d.day).days, d.state) for d in store.habit_days(todo_list.id)]
+
+
+def test_habit_days_show_below_todos_for_the_last_week(store, habitual):
+    async def check(app, pilot):
+        assert prompts(app, "todos") == ["Today", label("a")]
+        days = prompts(app, "days")
+        assert days[:6] == ["Today", f"{mark()} Read", f"{mark()} Run", "Yesterday", f"{mark()} Read", f"{mark()} Run"]
+        assert days.count(f"{mark()} Read") == 7 and days[-1] == "3 older days hidden · f shows"
+        await pilot.press("l", "tab")
+        assert app.focused.id == "days"
+        await pilot.press("f")
+        assert prompts(app, "days").count(f"{mark()} Read") == 10
+        await pilot.press("f")
+        assert prompts(app, "days")[-1] == "3 older days hidden · f shows"
+
+    run(KansoApp(store), check)
+
+
+def test_todos_and_habits_have_titles(store):
+    async def check(app, pilot):
+        titles = list(app.query(".title").results(Static))
+        assert [str(t.render()) for t in titles] == ["TODOS", "HABITS"]
+        for title, side in zip(titles, ("#top", "#bottom")):
+            assert title.region.bottom == app.query_one(side).region.y  # right above its side
+
+    run(KansoApp(store), check)
+
+
+def test_marking_past_days_and_clearing(store, habitual):
+    async def check(app, pilot):
+        focus_day(app, f"{mark()} Read", 1)  # yesterday's
+        await pilot.press("space")
+        assert highlighted(app, "days") == f"{mark('success')} Read"
+        await pilot.press("x")
+        assert highlighted(app, "days") == f"{mark('failure')} Read"
+        await pilot.press("x")
+        assert highlighted(app, "days") == f"{mark()} Read"
+        await pilot.press("j", "space")
+        assert highlighted(app, "days") == f"{mark('success')} Run"
+
+    run(KansoApp(store), check)
+    assert states(store, habitual)[2:4] == [("Read", 1, None), ("Run", 1, "success")]
+
+
+def test_today_cant_be_marked(store, habitual):
+    async def check(app, pilot):
+        focus_day(app, f"{mark()} Read")
+        await pilot.press("space")
+        assert notifications(app) == ["Habits can only be marked once the day is over"]
+        assert highlighted(app, "days") == f"{mark()} Read"
+
+    run(KansoApp(store), check)
+
+
+def test_r_switches_the_focused_side(store, habitual):
+    async def check(app, pilot):
+        top, bottom = (app.query_one(f"#{s}", ContentSwitcher) for s in ("top", "bottom"))
+        focus_day(app, f"{mark()} Read")
+        await pilot.press("r")
+        assert (top.current, bottom.current, app.focused.id) == ("todos", "habits", "habits")
+        assert prompts(app, "habits") == ["Read  Daily ", "Run  Daily "]
+        await pilot.press("r")
+        assert (bottom.current, app.focused.id) == ("days", "days")
+        await pilot.press("h", "r")  # from the lists: the top side
+        assert (top.current, bottom.current, app.focused.id) == ("repeats", "days", "lists")
+
+    run(KansoApp(store), check)
+
+
+@pytest.mark.parametrize("key", ["e", "enter"])
+def test_editing_a_day_edits_its_habit(store, habitual, key):
+    async def check(app, pilot):
+        focus_day(app, f"{mark()} Run")
+        await pilot.press(key)
+        assert isinstance(app.screen, RepeatDialog) and app.screen.text.value == "Run"
+        assert app.query_one("#bottom", ContentSwitcher).current == "habits"
+        await type_in_prompt(pilot, "Jog", clear=True)
+        await pilot.press("r")
+        assert prompts(app, "days")[2] == f"{mark()} Jog"
+
+    run(KansoApp(store), check)
+
+
+def test_adding_from_the_days_switches_to_the_habits(store, habitual):
+    async def check(app, pilot):
+        focus_day(app, f"{mark()} Read")
+        await pilot.press("a")
+        assert isinstance(app.screen, RepeatDialog) and app.screen.text.placeholder == "Habit"
+        assert app.query_one("#bottom", ContentSwitcher).current == "habits"
+        await type_in_prompt(pilot, "Stretch")
+        assert app.focused.id == "habits" and highlighted(app, "habits") == "Stretch  Daily "
+
+    run(KansoApp(store), check)
+    assert [h.text for h in store.habits(habitual.id)] == ["Read", "Run", "Stretch"]
+
+
+def test_add_habit_spawns_its_day_and_moves(store, habitual):
+    async def check(app, pilot):
+        focus_day(app, f"{mark()} Read")
+        await pilot.press("r", "a")
+        assert app.screen.text.placeholder == "Habit"
+        await type_in_prompt(pilot, "Stretch")
+        assert prompts(app, "habits")[-1] == highlighted(app, "habits") == "Stretch  Daily "
+        await pilot.press("K")
+        assert prompts(app, "habits") == ["Read  Daily ", "Stretch  Daily ", "Run  Daily "]
+        await pilot.press("r")
+        assert prompts(app, "days")[1:4] == [f"{mark()} Read", f"{mark()} Stretch", f"{mark()} Run"]
+        await pilot.press("J")  # days follow their habits' order; they don't move
+        assert prompts(app, "days")[1:4] == [f"{mark()} Read", f"{mark()} Stretch", f"{mark()} Run"]
+
+    run(KansoApp(store), check)
+
+
+def test_deleting_a_habit_keeps_its_days(store, habitual):
+    async def check(app, pilot):
+        focus_day(app, f"{mark()} Read")
+        await pilot.press("r", "j", "d")
+        assert str(app.screen.query_one("#question", Static).render()) == 'Delete habit "Run"? Its days stay.'
+        await pilot.press("y")
+        assert prompts(app, "habits") == ["Read  Daily "]
+        await pilot.press("r")
+        focus_day(app, f"{mark()} Run")
+        await pilot.press("e")
+        assert notifications(app) == ["Its habit was deleted"]
+
+    run(KansoApp(store), check)
+    assert [t for t, _, _ in states(store, habitual)].count("Run") == 2
+
+
+def test_deleting_a_day(store, habitual):
+    async def check(app, pilot):
+        focus_day(app, f"{mark()} Run", 1)
+        await pilot.press("d")
+        assert str(app.screen.query_one("#question", Static).render()) == 'Delete "Run" of Yesterday?'
+        await pilot.press("y")
+        assert prompts(app, "days")[3:5] == ["Yesterday", f"{mark()} Read"]
+
+    run(KansoApp(store), check)
+    assert ("Run", 1, None) not in states(store, habitual)
+
+
+def test_deleting_a_list_counts_its_habits(store, habitual):
+    async def check(app, pilot):
+        await pilot.press("d")
+        question = str(app.screen.query_one("#question", Static).render())
+        assert question == 'Delete list "Inbox" with its 1 todo and 2 habits?'
+        await pilot.press("y")
+        assert prompts(app, "days") == []
+
+    run(KansoApp(store), check)
+
+
+def test_a_new_day_spawns_habit_days(store, habitual, monkeypatch):
+    class Tomorrow(date):
+        @classmethod
+        def today(cls):
+            return TOMORROW
+
+    async def check(app, pilot):
+        monkeypatch.setattr(app_module, "date", Tomorrow)
+        app.check_day()
+        assert prompts(app, "days")[:3] == ["Tomorrow", f"{mark()} Read", f"{mark()} Run"]
+
+    run(KansoApp(store), check)
+
+
+def test_remote_habit_changes_appear(store, habitual, network, remote):
+    async def check(app, pilot):
+        asyncio.create_task(remote.run())
+        await app.node.pair("key-b", new_code(remote.store))
+        await eventually(lambda: remote.store.lists())  # b merges our rows after we're done
+        [run_habit] = [h for h in remote.store.habits(habitual.id) if h.text == "Run"]
+        remote.store.update_habit(run_habit.id, text="Jog")
+        await eventually(lambda: f"{mark()} Jog" in prompts(app, "days"))
         await remote.transport.close()
 
     run(KansoApp(store, sync_over(network)), check)

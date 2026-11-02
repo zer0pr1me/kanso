@@ -6,6 +6,7 @@ Personal, single-user, local-first todo app, rewritten from scratch in `src/kans
   - `store.py`: `Store`, the database and every operation on it. UIs call only this.
     Records in a deleted or missing list count as deleted, so rows from replicas never break reads.
   - `order.py`: how todos are grouped by date and autosorted; add autosort rules to `autosort_key`.
+  - Templates (`models.Scheduled`: repeats and habits) spawn instances (todos and habit days) in `Store.spawn`, with ids derived from template and day so replicas agree.
   - `models.py`: SQLModel tables, kept sync-ready: UUID ids, tombstone deletes (`deleted`), per-field hybrid-logical-clock stamps (`stamps`, set by `Store._save`; `clock.py`) merged field by field, last writer wins (`merge.py`), and fractional-index string positions (`position.py`). Preserve these properties in every change.
   - `migrations.py`: every change to the table models needs a migration appended to `MIGRATIONS`, written as a per-row data transform (it also upgrades rows synced from older replicas). Never edit a released migration.
   - `sync.py`: raw rows and digests as replicas exchange them; `Store.digest`/`export`/`merge_rows` use it. New synced tables go in `SYNCED_MODELS`.

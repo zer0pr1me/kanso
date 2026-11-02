@@ -94,7 +94,7 @@ def test_repeat_renames_retitle_its_todos_on_every_replica(stores):
     repeat = a.add_repeat(inbox.id, "water")
     sync(a, b)
     a.update_repeat(repeat.id, text="water plants")
-    b.spawn_repeats(TOMORROW)  # concurrently spawned with the old text
+    b.spawn(TOMORROW)  # concurrently spawned with the old text
     assert sync(a, b) == (1, 1)  # b's new todo / a's repeat
     assert contents(a) == contents(b)
     assert [t.title for t in b.todos(inbox.id)] == ["water plants"] * 2
@@ -175,3 +175,20 @@ def test_rows_from_a_newer_schema_are_refused(stores):
     a.add_list("Inbox")
     with pytest.raises(ValueError, match="newer"):
         b.merge_rows(rows_of(a), current_version() + 1)
+
+
+def test_habits_and_their_days_converge(stores):
+    a, b = stores
+    habit = a.add_habit(a.add_list("Inbox").id, "Read")
+    habit.start = date.today() - timedelta(days=1)
+    a._save(habit)
+    a.spawn()
+    sync(a, b)
+    yesterday = b.habit_days(habit.list_id)[-1]
+    b.mark_habit_day(yesterday.id, "success")
+    a.update_habit(habit.id, text="Read more")
+    b.spawn()  # spawns nothing new: same ids as a's
+    sync(a, b)
+    for store in (a, b):
+        assert [(d.title, d.state) for d in store.habit_days(habit.list_id)] == [("Read more", None), ("Read more", "success")]
+    assert a.digest() == b.digest()

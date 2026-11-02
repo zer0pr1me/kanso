@@ -1,11 +1,12 @@
-"""The app's three panes: lists, and a list's todos or repeats.
+"""The app's panes: lists, and a list's todos or repeats above its habit days or habits.
 
 Each pane binds its own keys, so they only act while it's focused and the footer shows
 just those. Panes save through dialogs and redraw themselves from the store.
 """
 
 from collections.abc import Callable, Iterator
-from datetime import date
+from datetime import date, timedelta
+from itertools import groupby
 from uuid import UUID
 
 from textual.binding import Binding
@@ -13,11 +14,11 @@ from textual.content import Content
 from textual.message import Message
 from textual.widgets.option_list import Option
 
-from kanso.core.models import Record, Repeat, Todo, TodoList
+from kanso.core.models import Habit, HabitDay, Record, Repeat, Scheduled, Todo, TodoList
 from kanso.core.order import done_before, sections
 from kanso.core.store import NAME_MAX, NotFound, Store
 from kanso.tui.dialogs import ConfirmDialog, RepeatDialog, TextPrompt
-from kanso.tui.format import repeat_label, section_title, todo_label
+from kanso.tui.format import habit_day_label, human_date, section_title, template_label, todo_label
 from kanso.tui.widgets import LabelSuggester, VimOptionList
 
 
@@ -28,15 +29,18 @@ def successor[T: Record](records: list[T], record: T) -> T | None:
     return rest[min(index, len(rest) - 1)] if rest else None
 
 
+MOVE_BINDINGS = [
+    Binding("J,shift+down", "move(1)", "Move", key_display="J/K"),
+    Binding("K,shift+up", "move(-1)", "Move up", show=False),
+]
+TOP_TOGGLE = ("r", "app.toggle_templates", "Todos/Repeats")
+BOTTOM_TOGGLE = ("r", "app.toggle_templates", "Days/Habits")
+
+
 class RecordPane[T: Record](VimOptionList):
     """Records from the store, one option each, with the option id being the record id."""
 
-    BINDINGS = [
-        ("r", "app.toggle_repeats", "Todos/Repeats"),
-        ("c", "app.connect", "Connect"),
-        Binding("J,shift+down", "move(1)", "Move", key_display="J/K"),
-        Binding("K,shift+up", "move(-1)", "Move up", show=False),
-    ]
+    BINDINGS = [("c", "app.connect", "Connect")]
 
     def __init__(self, store: Store, **options):
         super().__init__(**options)
@@ -108,9 +112,11 @@ def count(n: int, thing: str) -> str:
 
 class ListsPane(RecordPane[TodoList]):
     BINDINGS = [
+        TOP_TOGGLE,
         ("a", "add", "Add"),
         ("e", "edit", "Edit"),
         ("d", "delete", "Delete"),
+        *MOVE_BINDINGS,
         Binding("right,l", "app.focus_pane", show=False),
     ]
 
@@ -146,10 +152,13 @@ class ListsPane(RecordPane[TodoList]):
             self.prompt(lambda name: self.show(self.store.rename_list(todo_list.id, name)), todo_list.name)
 
     def action_delete(self):
-        if todo_list := self.current:
-            contents = [count(len(self.store.todos(todo_list.id)), "todo"), count(len(self.store.repeats(todo_list.id)), "repeat")]
-            question = f'Delete list "{todo_list.name}" with its {" and ".join(contents)}?'
-            self.delete(todo_list, question, self.store.delete_list)
+        if not (todo_list := self.current):
+            return
+        found = [self.store.todos, self.store.repeats, self.store.habits]
+        contents = [count(n, thing) for find, thing in zip(found, ["todo", "repeat", "habit"]) if (n := len(find(todo_list.id)))]
+        listed = " and ".join(filter(None, [", ".join(contents[:-1]), *contents[-1:]]))
+        question = f'Delete list "{todo_list.name}"{f" with its {listed}" if listed else ""}?'
+        self.delete(todo_list, question, self.store.delete_list)
 
 
 class ListContentsPane[T: Record](RecordPane[T]):
@@ -183,6 +192,7 @@ class TodosPane(ListContentsPane[Todo]):
     Todos done before today are hidden unless `f` shows them; `records` keeps them all."""
 
     BINDINGS = [
+        TOP_TOGGLE,
         ("a", "add", "Add"),
         ("e", "edit", "Edit"),
         ("y", "duplicate", "Duplicate"),
@@ -191,6 +201,7 @@ class TodosPane(ListContentsPane[Todo]):
         ("d", "delete", "Delete"),
         Binding("full_stop", "shift(1)", "+1 day", key_display="."),
         Binding("comma", "shift(-1)", "-1 day", key_display=","),
+        *MOVE_BINDINGS,
         ("f", "toggle_old_done", "Old done"),
     ]
 
@@ -246,7 +257,7 @@ class TodosPane(ListContentsPane[Todo]):
         if not (todo := self.current):
             return
         if repeat := self.store.repeat_of(todo.id):
-            self.app.edit_repeat(repeat)
+            self.app.edit_template("repeats", repeat)
         else:
             self.prompt(lambda text: self.show(self.store.update_todo(todo.id, text=text)), todo.title)
 
@@ -284,8 +295,46 @@ class TodosPane(ListContentsPane[Todo]):
             self.show(self.store.shift_todo(todo.id, days))
 
 
-class RepeatsPane(ListContentsPane[Repeat]):
-    BINDINGS = [("a", "add", "Add"), ("e", "edit", "Edit"), ("d", "delete", "Delete")]
+class TemplatesPane[T: Scheduled](ListContentsPane[T]):
+    """A list's templates, repeats or habits, edited with `RepeatDialog`."""
+
+    placeholder: str
+    """What the dialog's text field asks for."""
+
+    def add(self, fields: dict) -> T:
+        raise NotImplementedError
+
+    def update(self, template: T, changes: dict) -> T:
+        raise NotImplementedError
+
+    def remove(self, template_id: UUID):
+        raise NotImplementedError
+
+    def question(self, template: T) -> str:
+        """What deleting asks."""
+        raise NotImplementedError
+
+    def label(self, template: T) -> Content:
+        return template_label(template)
+
+    def action_add(self):
+        if self.list_id:
+            self.app.push_screen(RepeatDialog(lambda fields: self.show(self.add(fields)), placeholder=self.placeholder))
+
+    def action_edit(self):
+        if template := self.current:
+            self.app.push_screen(
+                RepeatDialog(lambda changes: self.show(self.update(template, changes)), template, self.placeholder)
+            )
+
+    def action_delete(self):
+        if template := self.current:
+            self.delete(template, self.question(template), self.remove)
+
+
+class RepeatsPane(TemplatesPane[Repeat]):
+    BINDINGS = [TOP_TOGGLE, ("a", "add", "Add"), ("e", "edit", "Edit"), ("d", "delete", "Delete"), *MOVE_BINDINGS]
+    placeholder = "Repeating todo"
 
     def fetch(self, list_id: UUID) -> list[Repeat]:
         return self.store.repeats(list_id)
@@ -293,20 +342,113 @@ class RepeatsPane(ListContentsPane[Repeat]):
     def move(self, repeat: Repeat, index: int) -> Repeat:
         return self.store.move_repeat(repeat.id, index)
 
-    def label(self, repeat: Repeat) -> Content:
-        return repeat_label(repeat)
+    def add(self, fields: dict) -> Repeat:
+        return self.store.add_repeat(self.list_id, **fields)
+
+    def update(self, repeat: Repeat, changes: dict) -> Repeat:
+        return self.store.update_repeat(repeat.id, **changes)
+
+    def remove(self, repeat_id: UUID):
+        self.store.delete_repeat(repeat_id)
+
+    def question(self, repeat: Repeat) -> str:
+        return f'Delete repeat "{repeat.text}"? The todos it added stay.'
+
+
+class HabitsPane(TemplatesPane[Habit]):
+    BINDINGS = [BOTTOM_TOGGLE, ("a", "add", "Add"), ("e", "edit", "Edit"), ("d", "delete", "Delete"), *MOVE_BINDINGS]
+    placeholder = "Habit"
+
+    def fetch(self, list_id: UUID) -> list[Habit]:
+        return self.store.habits(list_id)
+
+    def move(self, habit: Habit, index: int) -> Habit:
+        return self.store.move_habit(habit.id, index)
+
+    def add(self, fields: dict) -> Habit:
+        return self.store.add_habit(self.list_id, **fields)
+
+    def update(self, habit: Habit, changes: dict) -> Habit:
+        return self.store.update_habit(habit.id, **changes)
+
+    def remove(self, habit_id: UUID):
+        self.store.delete_habit(habit_id)
+
+    def question(self, habit: Habit) -> str:
+        return f'Delete habit "{habit.text}"? Its days stay.'
+
+
+SHOW_OLD_DAYS = "show_old_habit_days"
+"""Setting of this replica: if set, habit days older than a week are shown too."""
+RECENT_DAYS = 7
+
+
+class HabitDaysPane(ListContentsPane[HabitDay]):
+    """Habit days under a title per date, newest first; only the last week's unless `f` shows
+    older ones. A day is marked once it's over: `space` a success, `x` a failure, again clears."""
+
+    BINDINGS = [
+        BOTTOM_TOGGLE,
+        ("a", "add", "Add habit"),
+        Binding("space", "mark('success')", "Success"),
+        Binding("x", "mark('failure')", "Failure"),
+        ("e", "edit", "Edit habit"),
+        ("d", "delete", "Delete"),
+        ("f", "toggle_old", "Older days"),
+    ]
+
+    def fetch(self, list_id: UUID) -> list[HabitDay]:
+        return self.store.habit_days(list_id)
+
+    def visible(self) -> list[HabitDay]:
+        if self.store.meta(SHOW_OLD_DAYS):
+            return self.records
+        since = date.today() - timedelta(days=RECENT_DAYS - 1)
+        return [d for d in self.records if d.day >= since]
+
+    def make_options(self) -> Iterator[Option]:
+        visible = self.visible()
+        for day, days in groupby(visible, lambda d: d.day):
+            yield Option(Content(section_title(day)), disabled=True)
+            yield from (Option(habit_day_label(d), str(d.id)) for d in days)
+        if hidden := len(self.records) - len(visible):
+            note = f"{count(hidden, 'older day')} hidden · f shows"
+            yield Option(Content.styled(note, "not bold dim italic"), disabled=True)
+
+    def shown(self) -> list[HabitDay]:
+        return self.visible()
+
+    def action_toggle_old(self):
+        """Show or hide days older than a week, keeping the highlight if it stays shown."""
+        self.store.set_meta(SHOW_OLD_DAYS, None if self.store.meta(SHOW_OLD_DAYS) else "1")
+        self.show(self.current)
+        if self.highlighted is None:
+            self.action_first()
+
+    def action_mark(self, state: str):
+        """Mark the day `state`, or unchecked if it already is."""
+        if not (habit_day := self.current):
+            return
+        try:
+            self.show(self.store.mark_habit_day(habit_day.id, None if habit_day.state == state else state))
+        except ValueError as error:
+            self.notify(str(error), severity="error")
 
     def action_add(self):
+        """Switch to the habits and add one: days only come from habits."""
         if self.list_id:
-            self.app.push_screen(RepeatDialog(lambda fields: self.show(self.store.add_repeat(self.list_id, **fields))))
+            self.app.add_template("habits")
 
     def action_edit(self):
-        if repeat := self.current:
-            self.app.push_screen(
-                RepeatDialog(lambda changes: self.show(self.store.update_repeat(repeat.id, **changes)), repeat)
-            )
+        """Edit the day's habit."""
+        if not (habit_day := self.current):
+            return
+        if habit := self.store.habit_of(habit_day.id):
+            self.app.edit_template("habits", habit)
+        else:
+            self.notify("Its habit was deleted", severity="error")
 
     def action_delete(self):
-        if repeat := self.current:
-            question = f'Delete repeat "{repeat.text}"? The todos it added stay.'
-            self.delete(repeat, question, self.store.delete_repeat)
+        if habit_day := self.current:
+            question = f'Delete "{habit_day.title}" of {human_date(habit_day.day)}?'
+            self.delete(habit_day, question, self.store.delete_habit_day)

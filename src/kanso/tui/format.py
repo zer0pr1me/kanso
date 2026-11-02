@@ -5,7 +5,7 @@ from datetime import date
 
 from textual.content import Content
 
-from kanso.core.models import Repeat, Todo
+from kanso.core.models import HabitDay, Scheduled, Todo
 
 LABEL_STYLE = "bold $text-accent on $accent-muted"
 RULE_STYLE = "$text-secondary on $secondary-muted"
@@ -44,16 +44,24 @@ def todo_label(todo: Todo) -> Content:
     return Content.assemble(f"{'[x]' if todo.done else '[ ]'} {todo.title}{repeat}", *chips)
 
 
-def describe_rule(repeat: Repeat) -> str:
-    match repeat.kind:
+def describe_rule(template: Scheduled) -> str:
+    match template.kind:
         case "days":
-            return "Daily" if repeat.interval == 1 else f"Every {repeat.interval} days"
+            return "Daily" if template.interval == 1 else f"Every {template.interval} days"
         case "weekdays":
-            return ", ".join(calendar.day_abbr[d] for d in repeat.weekdays)
+            return ", ".join(calendar.day_abbr[d] for d in template.weekdays)
         case _:
-            return "Monthly on " + ", ".join(map(str, repeat.monthdays))
+            return "Monthly on " + ", ".join(map(str, template.monthdays))
 
 
-def repeat_label(repeat: Repeat) -> Content:
-    """Text, then the rule as a chip."""
-    return Content.assemble(repeat.text, *chip(describe_rule(repeat), RULE_STYLE))
+def template_label(template: Scheduled) -> Content:
+    """Text of a repeat or habit, then its rule as a chip."""
+    return Content.assemble(template.text, *chip(describe_rule(template), RULE_STYLE))
+
+
+HABIT_MARKS = {None: ("[ ]", ""), "success": ("[✓]", "bold $text-success"), "failure": ("[✗]", "bold $text-error")}
+
+
+def habit_day_label(habit_day: HabitDay) -> Content:
+    """Its state's mark, then its habit's title."""
+    return Content.assemble(HABIT_MARKS[habit_day.state], f" {habit_day.title}")

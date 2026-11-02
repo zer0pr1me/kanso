@@ -43,7 +43,12 @@ def add_devices(rows: Rows) -> Rows:
     return rows
 
 
-MIGRATIONS: list[Callable[[Rows], Rows]] = [add_todo_labels, add_todo_repeat_id, add_field_stamps, add_devices]
+def add_habits(rows: Rows) -> Rows:
+    """The `habit` and `habitday` tables are new and start empty; no rows change."""
+    return rows
+
+
+MIGRATIONS: list[Callable[[Rows], Rows]] = [add_todo_labels, add_todo_repeat_id, add_field_stamps, add_devices, add_habits]
 
 VERSION_KEY = "schema_version"
 

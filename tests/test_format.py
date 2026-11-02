@@ -4,9 +4,19 @@ from uuid import uuid4
 
 import pytest
 
-from kanso.core.models import Repeat, Todo
+from kanso.core.models import Habit, HabitDay, Repeat, Todo
 from kanso.core.repeats import clean_rule
-from kanso.tui.format import LABEL_STYLE, RULE_STYLE, describe_rule, human_date, repeat_label, section_title, todo_label
+from kanso.tui.format import (
+    HABIT_MARKS,
+    LABEL_STYLE,
+    RULE_STYLE,
+    describe_rule,
+    habit_day_label,
+    human_date,
+    section_title,
+    template_label,
+    todo_label,
+)
 from kanso.tui.panes import successor
 from kanso.tui.widgets import LabelSuggester
 
@@ -82,11 +92,11 @@ def test_todo_label_is_plain_text(fields, expected):
         ({"kind": "monthdays", "monthdays": [15, 1]}, "Monthly on 1, 15"),
     ],
 )
-def test_repeat_label_is_text_then_rule_chip(rule, expected):
+def test_template_label_is_text_then_rule_chip(rule, expected):
     repeat = Repeat(text="[b]Water", position="V", **clean_rule(**rule))
     assert describe_rule(repeat) == expected
-    assert str(repeat_label(repeat)) == f"[b]Water  {expected} "
-    assert spans(repeat_label(repeat)) == [(f" {expected} ", RULE_STYLE)]
+    assert str(template_label(repeat)) == f"[b]Water  {expected} "
+    assert spans(template_label(repeat)) == [(f" {expected} ", RULE_STYLE)]
 
 
 @pytest.mark.parametrize(
@@ -116,3 +126,15 @@ def test_successor_is_next_else_previous(removed, expected):
 def test_no_successor_of_the_only_record():
     record = Todo(text="a", position="V")
     assert successor([record], record) is None
+
+
+@pytest.mark.parametrize("state, mark", [(None, "[ ]"), ("success", "[✓]"), ("failure", "[✗]")])
+def test_habit_day_label_is_its_mark_then_plain_title(state, mark):
+    content = habit_day_label(HabitDay(text="[b]Read", position="V", day=date.today(), state=state))
+    assert str(content) == f"{mark} [b]Read"
+    assert spans(content) == ([(mark, HABIT_MARKS[state][1])] if state else [])
+
+
+def test_habits_are_labelled_like_repeats():
+    habit = Habit(text="Read", position="V", **clean_rule("weekdays", weekdays=[0]))
+    assert str(template_label(habit)) == "Read  Mon "

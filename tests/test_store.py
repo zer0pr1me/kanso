@@ -6,7 +6,7 @@ from sqlmodel import select
 
 from conftest import texts
 from kanso.core import store as store_module
-from kanso.core.models import SYNCED_MODELS, Repeat, Todo, TodoList, device_id
+from kanso.core.models import SYNCED_MODELS, Habit, HabitDay, Repeat, Todo, TodoList, device_id
 from kanso.core.store import NotFound, Store
 
 # Setup
@@ -41,6 +41,7 @@ def test_every_field_of_every_synced_model_persists(path):
     todo_list = s.add_list("Inbox")
     s.add_repeat(todo_list.id, "r", "weekdays", weekdays=[date.today().weekday()])
     s.update_todo(s.todos(todo_list.id)[0].id, done=True, labels=["home"], scheduled_at=None)
+    s.mark_habit_day(started_days_ago(s, todo_list, "h", 1).id, "success")
     s.add_device("k", "Laptop")
     before = {m: [r.model_dump() for r in s.db.exec(select(m))] for m in SYNCED_MODELS}
     node = s.clock.node
@@ -56,6 +57,7 @@ def test_clock_resumes_after_stored_stamps(path, model):
     s = Store(path)
     todo_list = s.add_list("Inbox")
     s.add_repeat(todo_list.id, "r")
+    s.add_habit(todo_list.id, "h")
     s.add_device("k", "Laptop")
     latest = s.db.exec(select(model).order_by(model.modified_at.desc())).first()
     # Make this model's stamp the newest, as if written by a replica with a clock ahead.
@@ -116,10 +118,14 @@ def deleted_records(store):
     todo_list = store.add_list("Inbox")
     todo = store.add_todo(todo_list.id, "a")
     repeat = store.add_repeat(todo_list.id, "r")
+    habit_day = started_days_ago(store, todo_list, "h", 1)
+    habit = store.db.get(Habit, habit_day.habit_id)
     store.delete_todo(todo.id)
     store.delete_repeat(repeat.id)
+    store.delete_habit(habit.id)
+    store.delete_habit_day(habit_day.id)
     store.delete_list(todo_list.id)
-    return {TodoList: todo_list.id, Todo: todo.id, Repeat: repeat.id}
+    return {TodoList: todo_list.id, Todo: todo.id, Repeat: repeat.id, Habit: habit.id, HabitDay: habit_day.id}
 
 
 OPERATIONS = {
@@ -131,6 +137,9 @@ OPERATIONS = {
         lambda s, id: s.add_todo(id, "x"),
         lambda s, id: s.add_repeat(id, "x"),
         lambda s, id: s.move_list(id, 0),
+        lambda s, id: s.habits(id),
+        lambda s, id: s.habit_days(id),
+        lambda s, id: s.add_habit(id, "x"),
     ],
     Todo: [
         lambda s, id: s.update_todo(id, text="x"),
@@ -144,6 +153,16 @@ OPERATIONS = {
         lambda s, id: s.update_repeat(id, text="x"),
         lambda s, id: s.move_repeat(id, 0),
         lambda s, id: s.delete_repeat(id),
+    ],
+    Habit: [
+        lambda s, id: s.update_habit(id, text="x"),
+        lambda s, id: s.move_habit(id, 0),
+        lambda s, id: s.delete_habit(id),
+    ],
+    HabitDay: [
+        lambda s, id: s.mark_habit_day(id, "success"),
+        lambda s, id: s.delete_habit_day(id),
+        lambda s, id: s.habit_of(id),
     ],
 }
 
@@ -190,7 +209,7 @@ def test_delete_list_tombstones_only_it_and_hides_its_contents(store, todo_list)
     assert store.db.get(TodoList, todo_list.id).deleted
     assert not store.db.get(Todo, todo.id).deleted
     assert store.labels() == []
-    assert store.spawn_repeats(date.today() + timedelta(days=1)) == []
+    assert store.spawn(date.today() + timedelta(days=1)) == []
 
 
 def test_records_of_a_list_never_received_are_hidden(store, todo_list):
@@ -200,7 +219,7 @@ def test_records_of_a_list_never_received_are_hidden(store, todo_list):
         Repeat(list_id=uuid4(), text="r", position="V"),
     )
     assert store.labels() == []
-    assert store.spawn_repeats() == []
+    assert store.spawn() == []
 
 
 # Todos
@@ -480,7 +499,7 @@ def test_changing_rule_restarts_it_today(store, todo_list):
 def test_renaming_a_repeat_retitles_its_todos_without_writing_them(store, todo_list):
     repeat = store.add_repeat(todo_list.id, "a")
     store.add_repeat(todo_list.id, "o")
-    store.spawn_repeats(date.today() + timedelta(days=1))
+    store.spawn(date.today() + timedelta(days=1))
     store.update_todo(store.todos(todo_list.id)[0].id, done=True)  # moves it last
     before = [(t.text, t.modified_at, dict(t.stamps)) for t in store.todos(todo_list.id)]
     store.update_repeat(repeat.id, text="b")
@@ -533,7 +552,7 @@ def test_delete_repeat_tombstones_it_keeping_its_todos(store, todo_list):
     assert store.repeats(todo_list.id) == []
     assert store.db.get(Repeat, repeat.id).deleted
     assert texts(store, todo_list.id) == ["a"]
-    assert store.spawn_repeats(date.today() + timedelta(days=1)) == []
+    assert store.spawn(date.today() + timedelta(days=1)) == []
 
 
 # Spawning repeats
@@ -563,7 +582,7 @@ def test_spawn_only_matching_repeats_on_given_day(store, todo_list):
     store.add_repeat(todo_list.id, "tomorrow", "weekdays", weekdays=[TOMORROW.weekday()])
     store.add_repeat(todo_list.id, "today", "weekdays", weekdays=[TODAY.weekday()])
     store.add_repeat(other.id, "daily")
-    spawned = store.spawn_repeats(TOMORROW)
+    spawned = store.spawn(TOMORROW)
     assert sorted((t.text, t.scheduled_at) for t in spawned) == [("daily", TOMORROW), ("tomorrow", TOMORROW)]
     assert texts(store, todo_list.id) == ["today", "tomorrow"]
 
@@ -571,19 +590,19 @@ def test_spawn_only_matching_repeats_on_given_day(store, todo_list):
 def test_spawn_puts_several_repeats_in_order(store, todo_list):
     for text in "abc":
         store.add_repeat(todo_list.id, text)
-    store.spawn_repeats(TOMORROW)
+    store.spawn(TOMORROW)
     assert texts(store, todo_list.id) == ["a", "b", "c"] * 2
 
 
 def test_spawn_is_idempotent_and_skips_changed_or_deleted_occurrences(store, todo_list):
     store.add_repeat(todo_list.id, "a")
-    assert store.spawn_repeats() == []
+    assert store.spawn() == []
     [todo] = store.todos(todo_list.id)
     store.update_todo(todo.id, done=True)
     store.shift_todo(todo.id, 1)
-    assert store.spawn_repeats() == []
+    assert store.spawn() == []
     store.delete_todo(todo.id)
-    assert store.spawn_repeats() == []
+    assert store.spawn() == []
     assert texts(store, todo_list.id) == []
 
 
@@ -621,3 +640,127 @@ def test_meta_is_set_once_and_persists(path):
     s.set_meta("absent", None)
     assert s.meta("x") is None
     s.close()
+
+
+# Habits
+
+
+def started_days_ago(store, todo_list, text: str, days: int, **rule) -> HabitDay:
+    """A habit started `days` ago, backfilled; its oldest day."""
+    habit = store.add_habit(todo_list.id, text, **rule)
+    habit.start = date.today() - timedelta(days=days)
+    store._save(habit)
+    store.spawn()
+    return store.habit_days(todo_list.id)[-1]
+
+
+def days_of(store, todo_list) -> list[tuple[str, date, str | None]]:
+    return [(d.title, d.day, d.state) for d in store.habit_days(todo_list.id)]
+
+
+TODAY = date.today()
+
+
+def test_add_habit_spawns_today(store, todo_list):
+    habit = store.add_habit(todo_list.id, " Read ", "days", interval=2)
+    assert (habit.text, habit.kind, habit.interval, habit.start) == ("Read", "days", 2, TODAY)
+    assert store.habits(todo_list.id) == [habit]
+    [day] = store.habit_days(todo_list.id)
+    assert (day.title, day.day, day.state, day.habit_id) == ("Read", TODAY, None, habit.id)
+    assert day.id == uuid5(habit.id, TODAY.isoformat())
+    assert store.todos(todo_list.id) == []  # habits spawn days, not todos
+
+
+def test_habits_backfill_their_matching_days_since_start(store, todo_list):
+    started_days_ago(store, todo_list, "every other", 4, kind="days", interval=2)
+    weekday = (TODAY - timedelta(days=1)).weekday()
+    started_days_ago(store, todo_list, "weekly", 10, kind="weekdays", weekdays=[weekday])
+    by_habit = {}
+    for title, day, _ in days_of(store, todo_list):
+        by_habit.setdefault(title, []).append((TODAY - day).days)
+    assert by_habit["every other"] == [0, 2, 4]
+    assert by_habit["weekly"] == [n for n in range(11) if (TODAY - timedelta(days=n)).weekday() == weekday]
+    assert store.spawn() == []  # idempotent
+
+
+def test_habit_days_are_newest_first_in_habit_order(store, todo_list):
+    b = started_days_ago(store, todo_list, "b", 1)
+    started_days_ago(store, todo_list, "a", 1)
+    store.move_habit(b.habit_id, 1)
+    assert [(t, (TODAY - d).days) for t, d, _ in days_of(store, todo_list)] == [("a", 0), ("b", 0), ("a", 1), ("b", 1)]
+
+
+def test_marking_past_days_and_clearing(store, todo_list):
+    day = started_days_ago(store, todo_list, "h", 1)
+    assert store.mark_habit_day(day.id, "success").state == "success"
+    assert store.mark_habit_day(day.id, "failure").state == "failure"
+    assert store.mark_habit_day(day.id, None).state is None
+
+
+def test_today_and_later_cant_be_marked(store, todo_list):
+    store.add_habit(todo_list.id, "h")
+    [today] = store.habit_days(todo_list.id)
+    with pytest.raises(ValueError, match="once the day is over"):
+        store.mark_habit_day(today.id, "success")
+    assert today.state is None
+
+
+@pytest.mark.parametrize("state", ["done", "", True])
+def test_only_success_failure_or_unchecked(store, todo_list, state):
+    day = started_days_ago(store, todo_list, "h", 1)
+    with pytest.raises(ValueError, match="success, a failure or unchecked"):
+        store.mark_habit_day(day.id, state)
+
+
+def test_deleted_days_are_not_spawned_again(store, todo_list):
+    day = started_days_ago(store, todo_list, "h", 2)
+    store.delete_habit_day(day.id)
+    assert store.spawn() == []
+    assert [(TODAY - d).days for _, d, _ in days_of(store, todo_list)] == [0, 1]
+
+
+def test_deleting_a_habit_keeps_its_days_titled(store, todo_list):
+    day = started_days_ago(store, todo_list, "Read", 1)
+    store.update_habit(day.habit_id, text="Read more")
+    assert store.habit_of(day.id).text == "Read more"
+    store.delete_habit(day.habit_id)
+    assert store.habits(todo_list.id) == [] and store.habit_of(day.id) is None
+    assert [t for t, _, _ in days_of(store, todo_list)] == ["Read more", "Read more"]
+    assert store.spawn(TODAY + timedelta(days=1)) == []
+    assert store.mark_habit_day(day.id, "failure").state == "failure"
+
+
+def test_changing_a_habits_rule_restarts_it(store, todo_list):
+    day = started_days_ago(store, todo_list, "h", 3)
+    habit = store.update_habit(day.habit_id, interval=2)
+    assert habit.start == TODAY and len(store.habit_days(todo_list.id)) == 4  # old days stay
+    store.update_habit(habit.id, text="renamed")
+    assert habit.start == TODAY
+
+
+def test_habit_rejects_bad_changes(store, todo_list):
+    habit = store.add_habit(todo_list.id, "h")
+    with pytest.raises(ValueError):
+        store.add_habit(todo_list.id, " ")
+    with pytest.raises(ValueError):
+        store.update_habit(habit.id, kind="weekdays")
+    with pytest.raises(TypeError):
+        store.update_habit(habit.id, start=TODAY)
+
+
+def test_move_habit(store, todo_list):
+    habits = [store.add_habit(todo_list.id, t) for t in "abc"]
+    store.move_habit(habits[2].id, 0)
+    assert [h.text for h in store.habits(todo_list.id)] == ["c", "a", "b"]
+
+
+def test_deleting_a_list_hides_its_habits_and_days(store, todo_list):
+    started_days_ago(store, todo_list, "h", 1)
+    store.delete_list(todo_list.id)
+    assert store.spawn(TODAY + timedelta(days=1)) == []
+    assert store._live(HabitDay) == []
+
+
+def test_habit_days_of_a_list_never_received_are_hidden(store):
+    store._save(HabitDay(list_id=uuid4(), habit_id=uuid4(), text="h", day=TODAY, position="V"))
+    assert store._live(HabitDay) == []

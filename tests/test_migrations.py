@@ -90,15 +90,15 @@ def test_runs_only_pending_migrations_in_order(path, old_db, monkeypatch):
 
 def test_newer_database_is_refused_untouched(path, monkeypatch):
     open_store(path)
-    sql(path, "UPDATE meta SET value = '5' WHERE key = 'schema_version'")
+    sql(path, "UPDATE meta SET value = '99' WHERE key = 'schema_version'")
     with pytest.raises(ValueError, match="newer"):
         Store(path)
-    assert stored_version(path) == "5"
+    assert stored_version(path) == "99"
 
 
 def test_refused_database_closes_its_connections(path, monkeypatch):
     open_store(path)
-    sql(path, "UPDATE meta SET value = '5' WHERE key = 'schema_version'")
+    sql(path, "UPDATE meta SET value = '99' WHERE key = 'schema_version'")
     engines = []
     connect = store_module.connect
     monkeypatch.setattr(store_module, "connect", lambda p: engines.append(connect(p)) or engines[0])
@@ -167,6 +167,11 @@ def test_upgrade_to_devices_changes_no_rows():
     assert migrations.add_devices(rows) == rows
 
 
+def test_upgrade_to_habits_changes_no_rows():
+    rows = {"todo": [{"id": "t"}]}
+    assert migrations.add_habits(rows) == rows
+
+
 def test_upgrades_database_from_schema_0(path):
     store = Store(path)
     inbox = store.add_list("Inbox")
@@ -182,6 +187,8 @@ def test_upgrades_database_from_schema_0(path):
     sql(path, "DROP TABLE old")
     sql(path, "DROP TABLE repeat")
     sql(path, "DROP TABLE device")
+    sql(path, "DROP TABLE habitday")
+    sql(path, "DROP TABLE habit")
     sql(path, "UPDATE meta SET value = '0' WHERE key = 'schema_version'")
     store = Store(path)
     [todo] = store.todos(inbox.id)
