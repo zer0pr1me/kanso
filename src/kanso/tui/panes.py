@@ -31,7 +31,12 @@ def successor[T: Record](records: list[T], record: T) -> T | None:
 class RecordPane[T: Record](VimOptionList):
     """Records from the store, one option each, with the option id being the record id."""
 
-    BINDINGS = [("r", "app.toggle_repeats", "Todos/Repeats"), ("c", "app.connect", "Connect")]
+    BINDINGS = [
+        ("r", "app.toggle_repeats", "Todos/Repeats"),
+        ("c", "app.connect", "Connect"),
+        Binding("J,shift+down", "move(1)", "Move", key_display="J/K"),
+        Binding("K,shift+up", "move(-1)", "Move up", show=False),
+    ]
 
     def __init__(self, store: Store, **options):
         super().__init__(**options)
@@ -58,6 +63,27 @@ class RecordPane[T: Record](VimOptionList):
         self.add_options(self.make_options())
         if highlight and any(r.id == highlight.id for r in self.shown()):
             self.highlighted = self.get_option_index(str(highlight.id))
+
+    def group(self, record: T) -> list[T]:
+        """The records shown that `record` can move among, in order."""
+        return self.shown()
+
+    def move(self, record: T, index: int) -> T:
+        """Move `record` to `index` in the store's order; saved and returned."""
+        raise NotImplementedError
+
+    def action_move(self, step: int):
+        """Swap the highlighted record with the next (`step` 1) or previous (-1) of its group;
+        at the group's edge, stay."""
+        if not (record := self.current):
+            return
+        group = self.group(record)
+        place = next(i for i, r in enumerate(group) if r.id == record.id) + step
+        if not 0 <= place < len(group):
+            return
+        others = [r for r in self.records if r.id != record.id]
+        index = next(i for i, r in enumerate(others) if r.id == group[place].id)
+        self.show(self.move(record, index + (step > 0)))
 
     def delete(self, record: T, question: str, delete: Callable[[UUID], object]):
         """If `question` is confirmed, `delete` the record and highlight the one now in its place."""
@@ -93,6 +119,9 @@ class ListsPane(RecordPane[TodoList]):
 
     def load(self) -> list[TodoList]:
         return self.store.lists()
+
+    def move(self, todo_list: TodoList, index: int) -> TodoList:
+        return self.store.move_list(todo_list.id, index)
 
     def label(self, todo_list: TodoList) -> Content:
         return Content(todo_list.name)
@@ -162,8 +191,6 @@ class TodosPane(ListContentsPane[Todo]):
         ("d", "delete", "Delete"),
         Binding("full_stop", "shift(1)", "+1 day", key_display="."),
         Binding("comma", "shift(-1)", "-1 day", key_display=","),
-        Binding("J,shift+down", "move(1)", "Move", key_display="J/K"),
-        Binding("K,shift+up", "move(-1)", "Move up", show=False),
         ("f", "toggle_old_done", "Old done"),
     ]
 
@@ -188,18 +215,12 @@ class TodosPane(ListContentsPane[Todo]):
     def shown(self) -> list[Todo]:
         return [t for _, todos in sections(self.visible()) for t in todos]
 
-    def action_move(self, step: int):
-        """Swap with the next (`step` 1) or previous (-1) todo shown in its group, of the same
-        date and the same done or not, as autosort keeps groups apart; at the group's edge, stay."""
-        if not (todo := self.current):
-            return
-        group = [t for t in self.shown() if (t.scheduled_at, t.done) == (todo.scheduled_at, todo.done)]
-        place = next(i for i, t in enumerate(group) if t.id == todo.id) + step
-        if not 0 <= place < len(group):
-            return
-        others = [t for t in self.records if t.id != todo.id]
-        index = next(i for i, t in enumerate(others) if t.id == group[place].id)
-        self.show(self.store.move_todo(todo.id, index + (step > 0)))
+    def group(self, todo: Todo) -> list[Todo]:
+        """Todos of the same date and the same done or not, as autosort keeps groups apart."""
+        return [t for t in self.shown() if (t.scheduled_at, t.done) == (todo.scheduled_at, todo.done)]
+
+    def move(self, todo: Todo, index: int) -> Todo:
+        return self.store.move_todo(todo.id, index)
 
     def action_toggle_old_done(self):
         """Show or hide todos done before today, keeping the highlight if it stays shown."""
@@ -268,6 +289,9 @@ class RepeatsPane(ListContentsPane[Repeat]):
 
     def fetch(self, list_id: UUID) -> list[Repeat]:
         return self.store.repeats(list_id)
+
+    def move(self, repeat: Repeat, index: int) -> Repeat:
+        return self.store.move_repeat(repeat.id, index)
 
     def label(self, repeat: Repeat) -> Content:
         return repeat_label(repeat)

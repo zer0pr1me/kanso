@@ -190,6 +190,11 @@ class Store:
         self._save(*tied)
         return key
 
+    def _move[T: Record](self, record: T, siblings: list[T], index: int) -> T:
+        """Move `record` to `index` among `siblings` (as if it were removed first)."""
+        record.position = self._position_at([r for r in siblings if r.id != record.id], index)
+        return self._save(record)
+
     def _get[T: Record](self, model: type[T], id: UUID) -> T:
         record = self.db.get(model, id)
         if not self._is_live(record):
@@ -218,6 +223,10 @@ class Store:
         todo_list = self._get(TodoList, list_id)
         todo_list.name = clean_name(name)
         return self._save(todo_list)
+
+    def move_list(self, list_id: UUID, index: int) -> TodoList:
+        """Move to `index` among the lists (as if it were removed first)."""
+        return self._move(self._get(TodoList, list_id), self.lists(), index)
 
     def delete_list(self, list_id: UUID):
         """Tombstone it, which also hides its todos and repeats."""
@@ -279,8 +288,7 @@ class Store:
     def move_todo(self, todo_id: UUID, index: int) -> Todo:
         """Move to `index` in the list's order (as if the todo were removed first)."""
         todo = self._get(Todo, todo_id)
-        todo.position = self._position_at([t for t in self.todos(todo.list_id) if t.id != todo.id], index)
-        return self._save(todo)
+        return self._move(todo, self.todos(todo.list_id), index)
 
     def delete_todo(self, todo_id: UUID):
         todo = self._get(Todo, todo_id)
@@ -312,6 +320,11 @@ class Store:
         self._save(repeat)
         self._spawn(repeat, date.today())
         return repeat
+
+    def move_repeat(self, repeat_id: UUID, index: int) -> Repeat:
+        """Move to `index` among its list's repeats (as if it were removed first)."""
+        repeat = self._get(Repeat, repeat_id)
+        return self._move(repeat, self.repeats(repeat.list_id), index)
 
     def delete_repeat(self, repeat_id: UUID):
         """Tombstone it; the todos it spawned stay."""

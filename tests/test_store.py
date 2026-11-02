@@ -130,6 +130,7 @@ OPERATIONS = {
         lambda s, id: s.repeats(id),
         lambda s, id: s.add_todo(id, "x"),
         lambda s, id: s.add_repeat(id, "x"),
+        lambda s, id: s.move_list(id, 0),
     ],
     Todo: [
         lambda s, id: s.update_todo(id, text="x"),
@@ -141,6 +142,7 @@ OPERATIONS = {
     ],
     Repeat: [
         lambda s, id: s.update_repeat(id, text="x"),
+        lambda s, id: s.move_repeat(id, 0),
         lambda s, id: s.delete_repeat(id),
     ],
 }
@@ -281,6 +283,19 @@ def test_move_todo(store, todo_list, src, index, expected):
     todos = [store.add_todo(todo_list.id, t) for t in "abc"]
     store.move_todo(todos[src].id, index)
     assert "".join(texts(store, todo_list.id)) == expected
+
+
+@pytest.mark.parametrize("src, index, expected", [(2, 0, "cab"), (0, 1, "bac"), (0, 99, "bca")])
+def test_move_list_and_repeat(store, todo_list, src, index, expected):
+    lists = [todo_list, *(store.add_list(n) for n in "bc")]
+    store.rename_list(todo_list.id, "a")
+    store.move_list(lists[src].id, index)
+    assert "".join(l.name for l in store.lists()) == expected
+    other = store.add_list("Other")
+    repeats = [store.add_repeat(todo_list.id, t) for t in "abc"]
+    store.add_repeat(other.id, "x")
+    store.move_repeat(repeats[src].id, index)
+    assert "".join(r.text for r in store.repeats(todo_list.id)) == expected
 
 
 def test_done_todos_go_last_and_reopened_ones_first(store, todo_list):

@@ -476,11 +476,46 @@ def test_move_reorders_within_its_group(store, grouped, down, up):
     assert "".join(texts(store, grouped.id)) == "abcedut"
 
 
-def test_move_needs_a_highlight(store, grouped):
+def test_move_lists_keeping_what_is_shown(store, inbox):
+    store.add_todo(store.add_list("Work").id, "report")
+
     async def check(app, pilot):
-        app.query_one("#todos").focus()
+        await pilot.press("J")
+        assert prompts(app, "lists") == ["Work", "Inbox"] and highlighted(app, "lists") == "Inbox"
+        assert prompts(app, "todos") == ["Today", label("a"), label("b")]
+        await pilot.press("J", "K", "K")  # last stays last, first stays first
+        assert prompts(app, "lists") == ["Inbox", "Work"]
+
+    run(KansoApp(store), check)
+    assert [l.name for l in store.lists()] == ["Inbox", "Work"]
+
+
+def test_move_repeats(store, repeating):
+    store.add_repeat(repeating.id, "z")
+
+    async def check(app, pilot):
+        await open_repeats(pilot, "J", "J")
+        assert prompts(app, "repeats") == ["y  Daily ", "z  Daily ", "x  Daily "]
+        await pilot.press("shift+up")
+        assert prompts(app, "repeats") == ["y  Daily ", "x  Daily ", "z  Daily "]
+        assert highlighted(app, "repeats") == "x  Daily "
+
+    run(KansoApp(store), check)
+    assert [r.text for r in store.repeats(repeating.id)] == ["y", "x", "z"]
+
+
+@pytest.mark.parametrize("pane", ["lists", "todos", "repeats"])
+def test_move_needs_a_highlight(store, pane):
+    store.add_repeat(store.add_list("Inbox").id, "x")
+
+    async def check(app, pilot):
+        if pane == "repeats":
+            await pilot.press("r")
+        widget = app.query_one(f"#{pane}", OptionList)
+        widget.focus()
+        widget.highlighted = None
         await pilot.press("J", "K")
-        assert shown_todos(app) == ["Today", "D", "E", "a", "b", "c", "Tomorrow", "t", "u"]
+        assert on_main_screen(app)
 
     run(KansoApp(store), check)
 
