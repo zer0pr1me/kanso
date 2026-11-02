@@ -417,17 +417,72 @@ def test_highlight_of_a_hidden_todo_is_dropped_on_redraw(store, old_done):
     run(KansoApp(store), check)
 
 
-def test_space_toggles_done_and_autosorts(store, inbox):
+def test_space_toggles_done_last_of_the_done_and_reopens_first_of_the_open(store, inbox):
+    store.add_todo(inbox.id, "c")
+
+    def shown(app):
+        return prompts(app, "todos")[1:]
+
     async def check(app, pilot):
         await pilot.press("l", "j", "space")
-        assert prompts(app, "todos")[1:] == [label("b", done=True), label("a")]
+        assert shown(app) == [label("b", done=True), label("a"), label("c")]
         assert highlighted(app) == label("b", done=True)
-        await pilot.press("space")
-        assert prompts(app, "todos")[1:] == [label("a"), label("b")]
+        await pilot.press("j", "space")
+        assert shown(app) == [label("b", done=True), label("a", done=True), label("c")]
         await pilot.press("k", "space")
+        assert shown(app) == [label("a", done=True), label("b"), label("c")]
+        assert highlighted(app) == label("b")
 
     run(KansoApp(store), check)
-    assert [(t.done, t.completed_at) for t in store.todos(inbox.id)] == [(True, TODAY), (False, None)]
+    assert [(t.text, t.done, t.completed_at) for t in store.todos(inbox.id)] == [
+        ("b", False, None),
+        ("c", False, None),
+        ("a", True, TODAY),
+    ]
+
+
+@pytest.fixture
+def grouped(store):
+    """Today: done d, e then open a, b, c; tomorrow: open t, u."""
+    todo_list = store.add_list("Inbox")
+    for text in "abcde":
+        store.add_todo(todo_list.id, text, done=text in "de")
+    for text in "tu":
+        store.add_todo(todo_list.id, text, scheduled_at=TOMORROW)
+    return todo_list
+
+
+def shown_todos(app) -> list[str]:
+    """Each todo's text, done ones in capitals, and date titles as they are."""
+    return [p[4:].upper() if p.startswith("[x]") else p[4:] if p.startswith("[ ]") else p for p in prompts(app, "todos")]
+
+
+@pytest.mark.parametrize("down, up", [("J", "K"), ("shift+down", "shift+up")])
+def test_move_reorders_within_its_group(store, grouped, down, up):
+    async def check(app, pilot):
+        assert shown_todos(app) == ["Today", "D", "E", "a", "b", "c", "Tomorrow", "t", "u"]
+        await pilot.press("l", "j", "j", down)  # a
+        assert shown_todos(app)[3:6] == ["b", "a", "c"] and highlighted(app) == label("a")
+        await pilot.press(down, down)  # already last of the open: stays
+        assert shown_todos(app)[3:6] == ["b", "c", "a"]
+        await pilot.press(up, up, up)  # first of the open: stays, not among the done
+        assert shown_todos(app) == ["Today", "D", "E", "a", "b", "c", "Tomorrow", "t", "u"]
+        await pilot.press("g", down)  # d, among the done only
+        assert shown_todos(app)[1:6] == ["E", "D", "a", "b", "c"]
+        await pilot.press("G", up)  # u, within tomorrow
+        assert shown_todos(app)[6:] == ["Tomorrow", "u", "t"]
+
+    run(KansoApp(store), check)
+    assert "".join(texts(store, grouped.id)) == "abcedut"
+
+
+def test_move_needs_a_highlight(store, grouped):
+    async def check(app, pilot):
+        app.query_one("#todos").focus()
+        await pilot.press("J", "K")
+        assert shown_todos(app) == ["Today", "D", "E", "a", "b", "c", "Tomorrow", "t", "u"]
+
+    run(KansoApp(store), check)
 
 
 @pytest.mark.parametrize("key, days", [("full_stop", 1), ("comma", -1)])

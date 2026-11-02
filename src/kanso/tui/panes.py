@@ -162,6 +162,8 @@ class TodosPane(ListContentsPane[Todo]):
         ("d", "delete", "Delete"),
         Binding("full_stop", "shift(1)", "+1 day", key_display="."),
         Binding("comma", "shift(-1)", "-1 day", key_display=","),
+        Binding("J,shift+down", "move(1)", "Move", key_display="J/K"),
+        Binding("K,shift+up", "move(-1)", "Move up", show=False),
         ("f", "toggle_old_done", "Old done"),
     ]
 
@@ -185,6 +187,19 @@ class TodosPane(ListContentsPane[Todo]):
 
     def shown(self) -> list[Todo]:
         return [t for _, todos in sections(self.visible()) for t in todos]
+
+    def action_move(self, step: int):
+        """Swap with the next (`step` 1) or previous (-1) todo shown in its group, of the same
+        date and the same done or not, as autosort keeps groups apart; at the group's edge, stay."""
+        if not (todo := self.current):
+            return
+        group = [t for t in self.shown() if (t.scheduled_at, t.done) == (todo.scheduled_at, todo.done)]
+        place = next(i for i, t in enumerate(group) if t.id == todo.id) + step
+        if not 0 <= place < len(group):
+            return
+        others = [t for t in self.records if t.id != todo.id]
+        index = next(i for i, t in enumerate(others) if t.id == group[place].id)
+        self.show(self.store.move_todo(todo.id, index + (step > 0)))
 
     def action_toggle_old_done(self):
         """Show or hide todos done before today, keeping the highlight if it stays shown."""

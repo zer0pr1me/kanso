@@ -283,6 +283,45 @@ def test_move_todo(store, todo_list, src, index, expected):
     assert "".join(texts(store, todo_list.id)) == expected
 
 
+def test_done_todos_go_last_and_reopened_ones_first(store, todo_list):
+    a, b, c = [store.add_todo(todo_list.id, t) for t in "abc"]
+    store.update_todo(a.id, done=True)
+    assert "".join(texts(store, todo_list.id)) == "bca"
+    store.update_todo(c.id, done=True)
+    assert "".join(texts(store, todo_list.id)) == "bac"
+    store.update_todo(a.id, done=False)
+    assert "".join(texts(store, todo_list.id)) == "abc"
+    position = b.position
+    store.update_todo(b.id, done=False, text="b2")  # not toggled: stays put
+    assert b.position == position
+
+
+def tie(store, todo_list) -> list[str]:
+    """Todos a-d where b, c and d share a's key, as replicas adding at the same spot can;
+    the order they show in, which ties break by id."""
+    todos = [store.add_todo(todo_list.id, t) for t in "abcd"]
+    for todo in todos[1:]:
+        todo.position = todos[0].position
+    store._save(*todos[1:])
+    return texts(store, todo_list.id)
+
+
+@pytest.mark.parametrize("index", [1, 2, 3])
+def test_inserting_between_tied_todos_rekeys_them_in_order(store, todo_list, index):
+    order = tie(store, todo_list)
+    store.add_todo(todo_list.id, "new", index=index)
+    assert texts(store, todo_list.id) == order[:index] + ["new"] + order[index:]
+    positions = [t.position for t in store.todos(todo_list.id)][index - 1 :]
+    assert positions == sorted(set(positions))  # ties before the gap may stay; from there on, strictly after
+
+
+def test_moving_between_tied_todos(store, todo_list):
+    order = tie(store, todo_list)
+    last = store.todos(todo_list.id)[-1]
+    store.move_todo(last.id, 1)
+    assert texts(store, todo_list.id) == [order[0], order[3], order[1], order[2]]
+
+
 def test_delete_todo_tombstones_it(store, todo_list):
     todo = store.add_todo(todo_list.id, "a")
     store.add_todo(todo_list.id, "b")
@@ -427,10 +466,10 @@ def test_renaming_a_repeat_retitles_its_todos_without_writing_them(store, todo_l
     repeat = store.add_repeat(todo_list.id, "a")
     store.add_repeat(todo_list.id, "o")
     store.spawn_repeats(date.today() + timedelta(days=1))
-    store.update_todo(store.todos(todo_list.id)[0].id, done=True)
+    store.update_todo(store.todos(todo_list.id)[0].id, done=True)  # moves it last
     before = [(t.text, t.modified_at, dict(t.stamps)) for t in store.todos(todo_list.id)]
     store.update_repeat(repeat.id, text="b")
-    assert texts(store, todo_list.id) == ["b", "o", "b", "o"]
+    assert texts(store, todo_list.id) == ["o", "b", "o", "b"]
     assert [(t.text, t.modified_at, t.stamps) for t in store.todos(todo_list.id)] == before
 
 

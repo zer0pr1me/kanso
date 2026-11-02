@@ -2,6 +2,7 @@ import json
 import os
 from collections.abc import Callable
 from datetime import date, timedelta
+from itertools import takewhile
 from pathlib import Path
 from uuid import UUID, uuid4, uuid5
 
@@ -105,14 +106,6 @@ def changed_fields(record: Record) -> set[str]:
     return {a.key for a in state.attrs if not state.persistent or a.history.has_changes()} - UNSTAMPED
 
 
-def position_at(items: list[Record], index: int | None) -> str:
-    """Key for inserting at `index` among ordered `items`; `None` (or past the end) appends."""
-    index = len(items) if index is None else max(0, min(index, len(items)))
-    before = items[index - 1].position if index else None
-    after = items[index].position if index < len(items) else None
-    return position.between(before, after)
-
-
 class Store:
     """The local database and every operation on it. UIs talk only to this."""
 
@@ -124,7 +117,9 @@ class Store:
         except BaseException:
             self.engine.dispose()
             raise
-        self.db = Session(self.engine, expire_on_commit=False)
+        # No autoflush: a query between changing a record and `_save` would write the change
+        # unstamped and hide it from `changed_fields`.
+        self.db = Session(self.engine, expire_on_commit=False, autoflush=False)
         self.clock = Clock(self.meta("node", lambda: uuid4().hex), self.last_change())
 
     def last_change(self) -> str | None:
@@ -175,6 +170,26 @@ class Store:
         list_id = getattr(record, "list_id", None)
         return list_id is None or self._is_live(self.db.get(TodoList, list_id))
 
+    def _position_at(self, items: list[Record], index: int | None) -> str:
+        """Key for inserting at `index` among ordered `items`; `None` (or past the end) appends.
+
+        Replicas pick keys independently, so neighbours can share one, leaving no key between
+        them; then the tied items after the gap get new keys first, keeping their order.
+        """
+        index = len(items) if index is None else max(0, min(index, len(items)))
+        before = items[index - 1].position if index else None
+        after = items[index:]
+        if before is None or not after or after[0].position > before:
+            return position.between(before, after[0].position if after else None)
+        tied = list(takewhile(lambda r: r.position <= before, after))
+        limit = after[len(tied)].position if len(tied) < len(after) else None
+        key = position.between(before, limit)
+        last = key
+        for record in tied:
+            record.position = last = position.between(last, limit)
+        self._save(*tied)
+        return key
+
     def _get[T: Record](self, model: type[T], id: UUID) -> T:
         record = self.db.get(model, id)
         if not self._is_live(record):
@@ -197,7 +212,7 @@ class Store:
         return self._live(TodoList)
 
     def add_list(self, name: str) -> TodoList:
-        return self._save(TodoList(name=clean_name(name), position=position_at(self.lists(), None)))
+        return self._save(TodoList(name=clean_name(name), position=self._position_at(self.lists(), None)))
 
     def rename_list(self, list_id: UUID, name: str) -> TodoList:
         todo_list = self._get(TodoList, list_id)
@@ -224,20 +239,26 @@ class Store:
 
         New todos are scheduled for today unless `scheduled_at` says otherwise.
         """
-        pos = position_at(self.todos(list_id), index)
+        pos = self._position_at(self.todos(list_id), index)
         todo = Todo(list_id=list_id, position=pos, scheduled_at=date.today())
         return self._save(apply_changes(todo, {"text": text, **fields}))
 
     def update_todo(self, todo_id: UUID, **changes) -> Todo:
-        """Set any of `text` (not blank), `done`, `scheduled_at`, `labels`; toggling `done` sets `completed_at`.
+        """Set any of `text` (not blank), `done`, `scheduled_at`, `labels`; toggling `done` sets
+        `completed_at` and moves it to the end of the list if done, else to its start.
         A repeating todo is titled by its repeat, so setting its `text` raises `ValueError` while the
         repeat is live, and otherwise makes it an ordinary todo."""
         todo = self._get(Todo, todo_id)
         if "text" in changes and self.repeat_of(todo_id):
             raise ValueError("Edit its repeat instead")
+        toggled = "done" in changes and changes["done"] != todo.done
         apply_changes(todo, changes)
         if "text" in changes:
             todo.repeat_id = None
+        if toggled:
+            # Shown done first, then open: a newly done todo goes last of the done, a reopened one first of the open.
+            others = [t for t in self.todos(todo.list_id) if t.id != todo.id]
+            todo.position = self._position_at(others, None if todo.done else 0)
         return self._save(todo)
 
     def duplicate_todo(self, todo_id: UUID) -> Todo:
@@ -258,7 +279,7 @@ class Store:
     def move_todo(self, todo_id: UUID, index: int) -> Todo:
         """Move to `index` in the list's order (as if the todo were removed first)."""
         todo = self._get(Todo, todo_id)
-        todo.position = position_at([t for t in self.todos(todo.list_id) if t.id != todo.id], index)
+        todo.position = self._position_at([t for t in self.todos(todo.list_id) if t.id != todo.id], index)
         return self._save(todo)
 
     def delete_todo(self, todo_id: UUID):
@@ -273,7 +294,7 @@ class Store:
 
     def add_repeat(self, list_id: UUID, text: str, kind: str = "days", **rule) -> Repeat:
         """Append to the list's repeats, spawning today's todo if due; `rule` as in `repeats.clean_rule`."""
-        pos = position_at(self.repeats(list_id), None)
+        pos = self._position_at(self.repeats(list_id), None)
         repeat = self._save(Repeat(list_id=list_id, text=clean_text(text), position=pos, **clean_rule(kind, **rule)))
         self._spawn(repeat, date.today())
         return repeat
@@ -315,7 +336,7 @@ class Store:
         id = uuid5(repeat.id, day.isoformat())
         if not occurs_on(repeat, day) or self.db.get(Todo, id):
             return None
-        pos = position_at(self.todos(repeat.list_id), None)
+        pos = self._position_at(self.todos(repeat.list_id), None)
         return self._save(Todo(id=id, list_id=repeat.list_id, repeat_id=repeat.id, text=repeat.text, position=pos, scheduled_at=day))
 
     # Devices
@@ -332,7 +353,7 @@ class Store:
         device = self.db.get(Device, device_id(key)) or Device(id=device_id(key), key=key, position="")
         device.sqlmodel_update({"name": clean_name(name), "deleted": False})
         if not device.position:
-            device.position = position_at(self.devices(), None)
+            device.position = self._position_at(self.devices(), None)
         return self._save(device)
 
     # Sync: raw rows in and out (see `sync.py`)
