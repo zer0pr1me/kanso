@@ -240,6 +240,15 @@ class Store:
             todo.repeat_id = None
         return self._save(todo)
 
+    def duplicate_todo(self, todo_id: UUID) -> Todo:
+        """Insert a copy below it with its text, labels and date, not done. A repeating todo,
+        even one of a deleted repeat, is an occurrence of its repeat, so copying one raises `ValueError`."""
+        todo = self._get(Todo, todo_id)
+        if todo.repeat_id:
+            raise ValueError("Repeating todos can't be duplicated")
+        index = self.todos(todo.list_id).index(todo) + 1
+        return self.add_todo(todo.list_id, todo.text, index, scheduled_at=todo.scheduled_at, labels=todo.labels)
+
     def shift_todo(self, todo_id: UUID, days: int) -> Todo:
         """Move the scheduled date by `days`; an unscheduled todo counts as scheduled today."""
         todo = self._get(Todo, todo_id)

@@ -187,7 +187,7 @@ def test_cursor_skips_date_titles(store, dated):
 # Keys act only where they apply
 
 
-@pytest.mark.parametrize("key", ["space", "number_sign", "full_stop", "comma"])
+@pytest.mark.parametrize("key", ["space", "number_sign", "full_stop", "comma", "y"])
 def test_todo_keys_do_nothing_elsewhere(store, inbox, key):
     async def check(app, pilot):
         await pilot.press(key)  # lists focused
@@ -498,6 +498,27 @@ def test_edit_labels_prefilled_completed_and_saved(store, inbox):
 
     run(KansoApp(store), check)
     assert [t.labels for t in store.todos(inbox.id)] == [["home", "work"], ["work"]]
+
+
+def test_duplicate_copies_below_and_highlights_the_copy(store, dated):
+    store.update_todo(store.todos(dated.id)[0].id, labels=["home"])
+
+    async def check(app, pilot):
+        await pilot.press("l", "j", "y")
+        assert prompts(app, "todos")[3:] == [label("a") + "  #home ", label("a") + "  #home ", label("c")]
+        assert app.query_one("#todos", OptionList).highlighted == 4
+
+    run(KansoApp(store), check)
+    assert texts(store, dated.id) == ["a", "a", "b", "c"]
+
+
+def test_duplicating_a_repeating_todo_is_refused(store, repeating):
+    async def check(app, pilot):
+        await pilot.press("l", "y")
+        assert on_main_screen(app) and len(notifications(app)) == 1
+
+    run(KansoApp(store), check)
+    assert texts(store, repeating.id) == ["x", "y"]
 
 
 def test_invalid_label_is_reported_and_prompt_stays(store, inbox):

@@ -156,6 +156,7 @@ class TodosPane(ListContentsPane[Todo]):
     BINDINGS = [
         ("a", "add", "Add"),
         ("e", "edit", "Edit"),
+        ("y", "duplicate", "Duplicate"),
         Binding("space", "toggle", "Done"),
         Binding("number_sign", "edit_labels", "Labels", key_display="#"),
         ("d", "delete", "Delete"),
@@ -224,6 +225,15 @@ class TodosPane(ListContentsPane[Todo]):
             suggester=LabelSuggester(self.store.labels()),
             select_on_focus=False,
         )
+
+    def action_duplicate(self):
+        """Copy below and highlight the copy; repeating todos are refused with a notification."""
+        if not (todo := self.current):
+            return
+        try:
+            self.show(self.store.duplicate_todo(todo.id))
+        except ValueError as error:
+            self.notify(str(error), severity="error")
 
     def action_toggle(self):
         if todo := self.current:

@@ -133,6 +133,7 @@ OPERATIONS = {
     ],
     Todo: [
         lambda s, id: s.update_todo(id, text="x"),
+        lambda s, id: s.duplicate_todo(id),
         lambda s, id: s.shift_todo(id, 1),
         lambda s, id: s.move_todo(id, 0),
         lambda s, id: s.delete_todo(id),
@@ -288,6 +289,33 @@ def test_delete_todo_tombstones_it(store, todo_list):
     store.delete_todo(todo.id)
     assert texts(store, todo_list.id) == ["b"]
     assert store.db.get(Todo, todo.id).deleted
+
+
+def test_duplicate_todo_copies_below_it_not_done(store, todo_list):
+    todo = store.add_todo(todo_list.id, "a", scheduled_at=date(2026, 1, 1), labels=["home", "work"], done=True)
+    store.add_todo(todo_list.id, "b")
+    copy = store.duplicate_todo(todo.id)
+    assert copy.id != todo.id
+    assert (copy.text, copy.labels, copy.scheduled_at, copy.done, copy.completed_at) == (
+        "a",
+        ["home", "work"],
+        date(2026, 1, 1),
+        False,
+        None,
+    )
+    assert texts(store, todo_list.id) == ["a", "a", "b"]
+    assert store.todos(todo_list.id)[1] == copy
+
+
+@pytest.mark.parametrize("delete_repeat", [False, True])
+def test_repeating_todos_cannot_be_duplicated(store, todo_list, delete_repeat):
+    repeat = store.add_repeat(todo_list.id, "r")
+    if delete_repeat:
+        store.delete_repeat(repeat.id)
+    [todo] = store.todos(todo_list.id)
+    with pytest.raises(ValueError):
+        store.duplicate_todo(todo.id)
+    assert texts(store, todo_list.id) == ["r"]
 
 
 @pytest.mark.parametrize("days", [1, -1, 7, 0])
