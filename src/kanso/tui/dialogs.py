@@ -19,7 +19,7 @@ from kanso.core.store import Store
 from kanso.sync.node import SyncNode
 from kanso.sync.protocol import CODE_TTL, new_code
 from kanso.sync.transport import SyncError
-from kanso.tui.widgets import VimRadioSet, VimSelectionList
+from kanso.tui.widgets import VimRadioSet, VimSelectionList, with_layouts
 
 
 class Dialog[T](ModalScreen[None]):
@@ -135,7 +135,7 @@ class RepeatDialog(Dialog[dict]):
 class ConfirmDialog(ModalScreen[bool]):
     """Asks `question`; dismisses with whether it was confirmed."""
 
-    BINDINGS = [Binding("y,enter", "answer(True)", "Yes"), Binding("n,escape", "answer(False)", "No")]
+    BINDINGS = with_layouts([Binding("y,enter", "answer(True)", "Yes"), Binding("n,escape", "answer(False)", "No")])
     CSS = """
     ConfirmDialog { align: center middle; }
     ConfirmDialog > Vertical { width: 60; height: auto; border: round $error; background: $surface; padding: 0 1; }

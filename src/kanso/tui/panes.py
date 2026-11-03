@@ -19,7 +19,7 @@ from kanso.core.order import done_before, sections
 from kanso.core.store import NAME_MAX, NotFound, Store
 from kanso.tui.dialogs import ConfirmDialog, RepeatDialog, TextPrompt
 from kanso.tui.format import habit_day_label, human_date, section_title, template_label, todo_label
-from kanso.tui.widgets import LabelSuggester, VimOptionList
+from kanso.tui.widgets import LabelSuggester, VimOptionList, with_layouts
 
 
 def successor[T: Record](records: list[T], record: T) -> T | None:
@@ -40,7 +40,7 @@ BOTTOM_TOGGLE = ("r", "app.toggle_templates", "Days/Habits")
 class RecordPane[T: Record](VimOptionList):
     """Records from the store, one option each, with the option id being the record id."""
 
-    BINDINGS = [("c", "app.connect", "Connect")]
+    BINDINGS = with_layouts([("c", "app.connect", "Connect")])
 
     def __init__(self, store: Store, **options):
         super().__init__(**options)
@@ -111,14 +111,14 @@ def count(n: int, thing: str) -> str:
 
 
 class ListsPane(RecordPane[TodoList]):
-    BINDINGS = [
+    BINDINGS = with_layouts([
         TOP_TOGGLE,
         ("a", "add", "Add"),
         ("e", "edit", "Edit"),
         ("d", "delete", "Delete"),
         *MOVE_BINDINGS,
         Binding("right,l", "app.focus_pane", show=False),
-    ]
+    ])
 
     class Emptied(Message):
         """The last list is gone, so no list is highlighted to show."""
@@ -164,7 +164,7 @@ class ListsPane(RecordPane[TodoList]):
 class ListContentsPane[T: Record](RecordPane[T]):
     """Records of the list `list_id`, set by the app; none until it is, or once sync deleted it."""
 
-    BINDINGS = [Binding("left,h,escape", "app.focus_lists", "Lists", show=False)]
+    BINDINGS = with_layouts([Binding("left,h,escape", "app.focus_lists", "Lists", show=False)])
 
     def __init__(self, store: Store, **options):
         super().__init__(store, **options)
@@ -191,7 +191,7 @@ class TodosPane(ListContentsPane[Todo]):
     """Todos under a title per scheduled date; titles are disabled, so the cursor skips them.
     Todos done before today are hidden unless `f` shows them; `records` keeps them all."""
 
-    BINDINGS = [
+    BINDINGS = with_layouts([
         TOP_TOGGLE,
         ("a", "add", "Add"),
         ("e", "edit", "Edit"),
@@ -203,7 +203,7 @@ class TodosPane(ListContentsPane[Todo]):
         Binding("comma", "shift(-1)", "-1 day", key_display=","),
         *MOVE_BINDINGS,
         ("f", "toggle_old_done", "Old done"),
-    ]
+    ])
 
     def fetch(self, list_id: UUID) -> list[Todo]:
         return self.store.todos(list_id)
@@ -295,6 +295,9 @@ class TodosPane(ListContentsPane[Todo]):
             self.show(self.store.shift_todo(todo.id, days))
 
 
+TEMPLATE_BINDINGS = [("a", "add", "Add"), ("e", "edit", "Edit"), ("d", "delete", "Delete"), *MOVE_BINDINGS]
+
+
 class TemplatesPane[T: Scheduled](ListContentsPane[T]):
     """A list's templates, repeats or habits, edited with `RepeatDialog`."""
 
@@ -333,7 +336,7 @@ class TemplatesPane[T: Scheduled](ListContentsPane[T]):
 
 
 class RepeatsPane(TemplatesPane[Repeat]):
-    BINDINGS = [TOP_TOGGLE, ("a", "add", "Add"), ("e", "edit", "Edit"), ("d", "delete", "Delete"), *MOVE_BINDINGS]
+    BINDINGS = with_layouts([TOP_TOGGLE, *TEMPLATE_BINDINGS])
     placeholder = "Repeating todo"
 
     def fetch(self, list_id: UUID) -> list[Repeat]:
@@ -356,7 +359,7 @@ class RepeatsPane(TemplatesPane[Repeat]):
 
 
 class HabitsPane(TemplatesPane[Habit]):
-    BINDINGS = [BOTTOM_TOGGLE, ("a", "add", "Add"), ("e", "edit", "Edit"), ("d", "delete", "Delete"), *MOVE_BINDINGS]
+    BINDINGS = with_layouts([BOTTOM_TOGGLE, *TEMPLATE_BINDINGS])
     placeholder = "Habit"
 
     def fetch(self, list_id: UUID) -> list[Habit]:
@@ -387,7 +390,7 @@ class HabitDaysPane(ListContentsPane[HabitDay]):
     """Habit days under a title per date, newest first; only the last week's unless `f` shows
     older ones. A day is marked once it's over: `space` a success, `x` a failure, again clears."""
 
-    BINDINGS = [
+    BINDINGS = with_layouts([
         BOTTOM_TOGGLE,
         ("a", "add", "Add habit"),
         Binding("space", "mark('success')", "Success"),
@@ -395,7 +398,7 @@ class HabitDaysPane(ListContentsPane[HabitDay]):
         ("e", "edit", "Edit habit"),
         ("d", "delete", "Delete"),
         ("f", "toggle_old", "Older days"),
-    ]
+    ])
 
     def fetch(self, list_id: UUID) -> list[HabitDay]:
         return self.store.habit_days(list_id)

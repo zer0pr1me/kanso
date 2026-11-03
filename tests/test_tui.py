@@ -1038,3 +1038,49 @@ def test_remote_habit_changes_appear(store, habitual, network, remote):
         await remote.transport.close()
 
     run(KansoApp(store, sync_over(network)), check)
+
+
+# Ukrainian layout: the same physical keys work
+
+
+def test_ukrainian_layout_keys_act_like_us_ones(store, inbox):
+    store.add_list("Work")
+
+    async def check(app, pilot):
+        await pilot.press("о")  # j
+        assert highlighted(app, "lists") == "Work"
+        await pilot.press("Л")  # K: move up
+        assert prompts(app, "lists") == ["Work", "Inbox"]
+        await pilot.press("л", "ф")  # k, a: add a list
+        assert isinstance(app.screen, TextPrompt)
+        await pilot.press("escape", "д", "о")  # l, j: into the todos, down
+        assert highlighted(app) == label("b")
+        await pilot.press("ю")  # .: +1 day
+        assert [t.scheduled_at for t in store.todos(inbox.id)] == [TODAY, TOMORROW]
+        await pilot.press("numero_sign")  # #: labels
+        assert app.screen.query_one(Input).placeholder == "Labels"
+        await pilot.press("escape", "к")  # r: repeats
+        assert app.query_one("#top", ContentSwitcher).current == "repeats"
+
+    run(KansoApp(store), check)
+
+
+@pytest.mark.parametrize("key, deleted", [("н", True), ("т", False)])
+def test_ukrainian_layout_answers_confirmations(store, inbox, key, deleted):
+    async def check(app, pilot):
+        await pilot.press("д", "в", key)  # l, d, then y or n
+        assert on_main_screen(app)
+
+    run(KansoApp(store), check)
+    assert texts(store, inbox.id) == (["b"] if deleted else ["a", "b"])
+
+
+def test_ukrainian_layout_keys_stay_out_of_the_footer_and_type_into_prompts(store, inbox):
+    async def check(app, pilot):
+        await pilot.press("l")
+        shown = [b.binding.key for b in app.active_bindings.values() if b.binding.show]
+        assert shown and all(key.isascii() for key in shown)
+        await pilot.press("ф", *"молоко", "enter")
+
+    run(KansoApp(store), check)
+    assert texts(store, inbox.id) == ["a", "молоко", "b"]

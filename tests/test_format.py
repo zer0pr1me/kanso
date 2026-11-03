@@ -3,6 +3,7 @@ from datetime import date
 from uuid import uuid4
 
 import pytest
+from textual.binding import Binding
 
 from kanso.core.models import Habit, HabitDay, Repeat, Todo
 from kanso.core.repeats import clean_rule
@@ -18,7 +19,7 @@ from kanso.tui.format import (
     todo_label,
 )
 from kanso.tui.panes import successor
-from kanso.tui.widgets import LabelSuggester
+from kanso.tui.widgets import UA_LAYOUT, LabelSuggester, with_layouts
 
 WEDNESDAY = date(2026, 10, 21)
 
@@ -138,3 +139,27 @@ def test_habit_day_label_is_its_mark_then_plain_title(state, mark):
 def test_habits_are_labelled_like_repeats():
     habit = Habit(text="Read", position="V", **clean_rule("weekdays", weekdays=[0]))
     assert str(template_label(habit)) == "Read  Mon "
+
+
+# Keyboard layouts
+
+
+def test_ukrainian_layout_types_on_the_same_keys():
+    assert [UA_LAYOUT[k] for k in ["a", "e", "J", "G", "full_stop", "comma", "number_sign", "solidus"]] == [
+        "ф",
+        "у",
+        "О",
+        "П",
+        "ю",
+        "б",
+        "numero_sign",
+        "full_stop",
+    ]
+
+
+def test_with_layouts_adds_hidden_ukrainian_copies():
+    original = Binding("J,shift+down", "move(1)", "Move", key_display="J/K")
+    assert [(b.key, b.action, b.show) for b in with_layouts([("a", "add", "Add")])] == [("a", "add", True), ("ф", "add", False)]
+    assert with_layouts([original])[1] == Binding("О", "move(1)", "Move", show=False)
+    assert [(b.key, b.show) for b in with_layouts([("space", "toggle", "Done")])] == [("space", True)]
+    assert [b.key for b in with_layouts([Binding("enter, y", "yes")])] == ["enter, y", "н"]

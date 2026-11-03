@@ -1,15 +1,48 @@
-"""Widgets with vim keys, and label completion."""
+"""Widgets with vim keys, key bindings that work on the Ukrainian layout too, and label completion."""
 
-from textual.binding import Binding
+import unicodedata
+
+from textual.binding import Binding, BindingType
 from textual.suggester import Suggester
 from textual.widgets import OptionList, RadioSet, SelectionList
 
-VIM_BINDINGS = [
-    Binding("j", "cursor_down", show=False),
-    Binding("k", "cursor_up", show=False),
-    Binding("g", "first", show=False),
-    Binding("G", "last", show=False),
-]
+
+def key_name(character: str) -> str:
+    """The name Textual gives the key typing `character`: itself if alphanumeric, else its Unicode name."""
+    if character.isalnum():
+        return character
+    return unicodedata.name(character).lower().replace(" ", "_").replace("-", "_")
+
+
+US_KEYS = "qwertyuiop[]asdfghjkl;'zxcvbnm,./" + 'QWERTYUIOP{}ASDFGHJKL:"ZXCVBNM<>?' + "#"
+UA_KEYS = "йцукенгшщзхїфівапролджєячсмитьбю." + "ЙЦУКЕНГШЩЗХЇФІВАПРОЛДЖЄЯЧСМИТЬБЮ," + "№"
+UA_LAYOUT = {key_name(us): key_name(ua) for us, ua in zip(US_KEYS, UA_KEYS, strict=True)}
+"""Key names on the US layout, and what the Ukrainian (ЙЦУКЕН) layout types on the same physical key."""
+
+
+def with_layouts(bindings: list[BindingType]) -> list[Binding]:
+    """`bindings`, plus a copy of each on the keys the Ukrainian layout types in their places,
+    hidden from the footer. Terminals send characters, not physical keys, so without the copy
+    `a` does nothing while the layout types `ф`."""
+    result = []
+    for binding in bindings:
+        binding = binding if isinstance(binding, Binding) else Binding(*binding)
+        result.append(binding)
+        keys = [key.strip() for key in binding.key.split(",")]
+        if aliases := [UA_LAYOUT[key] for key in keys if key in UA_LAYOUT]:
+            alias = Binding(",".join(aliases), binding.action, binding.description, show=False, priority=binding.priority)
+            result.append(alias)
+    return result
+
+
+VIM_BINDINGS = with_layouts(
+    [
+        Binding("j", "cursor_down", show=False),
+        Binding("k", "cursor_up", show=False),
+        Binding("g", "first", show=False),
+        Binding("G", "last", show=False),
+    ]
+)
 
 
 class VimOptionList(OptionList):
@@ -21,7 +54,7 @@ class VimSelectionList(SelectionList):
 
 
 class VimRadioSet(RadioSet):
-    BINDINGS = [Binding("j", "next_button", show=False), Binding("k", "previous_button", show=False)]
+    BINDINGS = with_layouts([Binding("j", "next_button", show=False), Binding("k", "previous_button", show=False)])
 
     def on_mount(self):
         """Start the cursor on the pressed button instead of the first, once `RadioSet` has set it."""
