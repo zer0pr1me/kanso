@@ -2,6 +2,10 @@
 
 Personal, single-user, local-first todo app, rewritten from scratch in `src/kanso/` (`v1/` is history only, not a reference). No server, no accounts: each instance owns its SQLite database, and paired devices sync peer to peer over iroh.
 
+Kanso is a P2P node at its base: one executable, `kanso`, whose node stores the data and syncs it. Interfaces run on top of the node, inside the same process. The TUI is the only one today; a web app, a Telegram bot and an API may follow. They are chosen by flags (the TUI by default, `--no-tui` for none) and are never separate services. An interface uses only `Node` and its `Store`, never the sync internals, so interfaces stay independent of each other and of networking.
+
+- `node.py`: `Node`, the running node. It owns the store, sync (when this process owns the data dir, via `owner_lock`) and the day rollover (`check_day` spawns each new day's instances). It tells interfaces about changes from elsewhere through `subscribe`. `Node.run` runs interfaces, each an `async (node) -> result`, until the first one returns.
+- `__main__.py`: the `kanso` executable: parses the flags, then runs the node with the chosen interfaces. Headless, it syncs until SIGINT/SIGTERM.
 - `core/`: no UI dependencies; the part future frontends (web, mobile) build on.
   - `store.py`: `Store`, the database and every operation on it. UIs call only this.
     Records in a deleted or missing list count as deleted, so rows from replicas never break reads.
@@ -13,9 +17,9 @@ Personal, single-user, local-first todo app, rewritten from scratch in `src/kans
 - `sync/`: networking, no UI dependencies.
   - `transport.py`: `Transport` dials and accepts peers by public key; `IrohTransport` for real, `MemoryTransport` for tests. `Channel` carries length-prefixed JSON.
   - `protocol.py`: one session (hello, digests, rows) and pairing codes. Synced `Device` rows are the trust list.
-  - `node.py`: `SyncNode` serves peers and syncs with every device on start, after local changes and periodically; `owner_lock` makes one process per data dir the node.
-- `tui/`: Textual app, the only UI.
-- `web.py`: serves the same Textual app in the browser via textual-serve. No separate web frontend.
+  - `node.py`: `SyncNode` serves peers and syncs with every device on start, after local changes and periodically; `owner_lock` makes one process per data dir the one that syncs.
+- `tui/`: Textual app, the only interface so far; `tui.app.run` is its entry on the node.
+- `web.py`: `kanso-web`, which serves the TUI in the browser via textual-serve as one `kanso` process per tab. It is still separate for now: a real web interface should become a node interface (`kanso --web`).
 
 How to run the app is documented in `README.md`. Keep it up to date whenever commands, ports, requirements, or setup steps change.
 

@@ -14,8 +14,14 @@ Personal, local-first todo app with a terminal UI, also served in the browser.
 ```sh
 uv sync
 uv run kanso          # terminal UI
+uv run kanso --no-tui # no UI: just store and sync, until ctrl+c or SIGTERM
 uv run kanso-web      # same UI in the browser on http://localhost:8080
 ```
+
+`kanso` is a node: it stores your data and syncs it with your other devices, with
+interfaces on top (the terminal UI by default). Without the UI it suits an
+always-online device, such as a home server, that the others can sync through;
+pair it by running `kanso` with the UI there once.
 
 Data is stored in a local SQLite database in the user data directory
 (`~/.local/share/kanso/kanso.db` on Linux). Set `KANSO_DATA_DIR` to keep it
@@ -41,6 +47,7 @@ both survive. The header shows how many devices are online.
 - Paired devices are fully trusted: any of them can change or delete anything.
 - Only one kanso process per data directory syncs (a `sync.lock` there says
   which); other windows, such as browser tabs of `kanso-web`, share its data.
+  `kanso --no-tui` refuses to start while another process syncs.
 - Don't copy the data directory to another machine, or keep it in a synced
   folder: the copy would be the same device as far as sync is concerned. Pair
   the machines instead.

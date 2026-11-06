@@ -11,7 +11,7 @@ dependencies = [
 ]
 
 [project.scripts]
-kanso = "kanso.tui.app:main"
+kanso = "kanso.__main__:main"
 kanso-web = "kanso.web:main"
 
 [dependency-groups]

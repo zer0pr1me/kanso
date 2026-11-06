@@ -4,4 +4,4 @@ from textual_serve.server import Server
 
 
 def main():
-    Server(f"{sys.executable} -m kanso.tui.app", port=8080).serve()
+    Server(f"{sys.executable} -m kanso", port=8080).serve()

@@ -1,19 +1,12 @@
-from collections.abc import Awaitable, Callable
-from datetime import date
-
 from textual import on
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.widgets import ContentSwitcher, Footer, Header, OptionList, Static
 
 from kanso.core.models import Scheduled
-from kanso.core.store import Store
-from kanso.sync import node
-from kanso.sync.node import SyncNode
+from kanso.node import Node
 from kanso.tui.dialogs import ConnectDialog
 from kanso.tui.panes import HabitDaysPane, HabitsPane, ListContentsPane, ListsPane, RepeatsPane, TodosPane
-
-type StartNode = Callable[[Store, Callable[[bool], None]], Awaitable[SyncNode]]
 
 
 class KansoApp(App):
@@ -29,15 +22,11 @@ class KansoApp(App):
     #todos > .option-list--option-disabled, #days > .option-list--option-disabled { color: $text-accent; text-style: bold; }
     """
 
-    def __init__(self, store: Store, start_node: StartNode | None = None):
-        """With `start_node`, this process syncs, unless another one owns the data dir."""
+    def __init__(self, node: Node):
+        """An interface of the running `node`."""
         super().__init__()
-        self.store = store
-        self.day = date.today()
-        self.start_node = start_node
-        self.node: SyncNode | None = None
-        self.lock = None
-        self.sync_note: str | None = "Sync is off"
+        self.node, self.store = node, node.store
+        self.unsubscribe = lambda: None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -54,32 +43,19 @@ class KansoApp(App):
                     yield HabitsPane(self.store, id="habits")
         yield Footer()
 
-    async def on_mount(self):
-        self.store.spawn(self.day)
+    def on_mount(self):
         self.query_one(ListsPane).show()
-        self.set_interval(60, self.check_day)
-        if self.start_node:
-            await self.start_sync()
+        self.unsubscribe = self.node.subscribe(self.node_updated)
 
-    async def start_sync(self):
-        if not (lock := node.owner_lock(self.store)):
-            self.sync_note = "Sync runs in another kanso window: connect from there"
-            return
-        self.lock, self.sync_note = lock, None
-        self.node = await self.start_node(self.store, self.sync_updated)
-        self.run_worker(self.node.run(), name="sync", exit_on_error=False)
+    def on_unmount(self):
+        self.unsubscribe()
 
-    async def on_unmount(self):
-        if self.node:
-            await self.node.transport.close()
-        if self.lock:
-            self.lock.close()
-
-    def sync_updated(self, changed: bool):
-        """Show the sync status; after merges, redraw keeping the highlights."""
-        online = len(self.node.online)
-        synced = f" · synced {self.node.synced_at:%H:%M}" if self.node.synced_at else ""
-        self.sub_title = f"{online} device{'' if online == 1 else 's'} online{synced}"
+    def node_updated(self, changed: bool):
+        """Show the sync status; after changes from elsewhere, redraw keeping the highlights."""
+        if sync := self.node.sync:
+            online = len(sync.online)
+            synced = f" · synced {sync.synced_at:%H:%M}" if sync.synced_at else ""
+            self.sub_title = f"{online} device{'' if online == 1 else 's'} online{synced}"
         if changed:
             lists = self.query_one(ListsPane)
             lists.show(lists.current)
@@ -92,16 +68,7 @@ class KansoApp(App):
             pane.show(pane.current)
 
     def action_connect(self):
-        key = self.node.transport.key if self.node else node.device_key(self.store)
-        self.push_screen(ConnectDialog(self.store, key, self.node, self.sync_note))
-
-    def check_day(self):
-        """Once the date changes, spawn the new day's todos and habit days, and redraw the dated sections."""
-        if date.today() == self.day:
-            return
-        self.day = date.today()
-        self.store.spawn(self.day)
-        self.redraw_shown()
+        self.push_screen(ConnectDialog(self.node))
 
     def shown_pane(self, switcher_id: str = "top") -> ListContentsPane:
         switcher = self.query_one(f"#{switcher_id}", ContentSwitcher)
@@ -167,13 +134,6 @@ class KansoApp(App):
         self.open_templates(pane_id).action_add()
 
 
-def main():
-    store = Store()
-    try:
-        KansoApp(store, node.start).run()
-    finally:
-        store.close()
-
-
-if __name__ == "__main__":
-    main()
+async def run(node: Node):
+    """The TUI as an interface of `node`, until the user quits."""
+    await KansoApp(node).run_async()

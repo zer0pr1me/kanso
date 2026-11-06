@@ -5,12 +5,13 @@ import pytest
 from textual.widgets import ContentSwitcher, Input, OptionList, Static
 
 from conftest import notifications, run, texts
+from kanso import node as kanso_node
 from kanso.core.store import NAME_MAX, Store
+from kanso.node import Node
 from kanso.sync import node as node_module
 from kanso.sync.node import SyncNode, device_key, owner_lock
 from kanso.sync.protocol import new_code
 from kanso.sync.transport import MemoryTransport
-from kanso.tui import app as app_module
 from kanso.tui.app import KansoApp
 from kanso.tui import dialogs
 from kanso.tui.dialogs import ConfirmDialog, ConnectDialog, RepeatDialog, TextPrompt
@@ -18,6 +19,10 @@ from kanso.tui.dialogs import ConfirmDialog, ConnectDialog, RepeatDialog, TextPr
 TODAY = date.today()
 TOMORROW = TODAY + timedelta(days=1)
 YESTERDAY = TODAY - timedelta(days=1)
+
+
+def tui(store, start_sync=None) -> KansoApp:
+    return KansoApp(Node(store, start_sync))
 
 
 def label(text: str, done: bool = False) -> str:
@@ -76,7 +81,7 @@ def test_empty_store(store):
     async def check(app, pilot):
         assert prompts(app, "lists") == prompts(app, "todos") == []
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
 
 
 def test_highlighting_a_list_shows_its_todos_and_repeats(store):
@@ -91,7 +96,7 @@ def test_highlighting_a_list_shows_its_todos_and_repeats(store):
         assert prompts(app, "todos") == ["Today", label("r ↻")]
         assert prompts(app, "repeats") == ["r  Every 2 days "]
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
 
 
 def test_text_renders_plainly_not_as_markup(store):
@@ -104,7 +109,7 @@ def test_text_renders_plainly_not_as_markup(store):
 
         assert (line("lists"), line("todos"), line("todos", 1)) == ("[b]Lists[/b]", "No date", "[ ] [red]a[/red]")
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
 
 
 @pytest.mark.parametrize("key", ["enter", "right", "l"])
@@ -113,7 +118,7 @@ def test_entering_a_list_focuses_its_first_todo(store, dated, key):
         await pilot.press(key)
         assert app.focused.id == "todos" and highlighted(app) == label("b")
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
 
 
 def test_entering_keeps_highlighted_todo(store, inbox):
@@ -122,7 +127,7 @@ def test_entering_keeps_highlighted_todo(store, inbox):
         await pilot.press("l")
         assert highlighted(app) == label("b")
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
 
 
 def test_entering_empty_list_highlights_nothing(store):
@@ -132,7 +137,7 @@ def test_entering_empty_list_highlights_nothing(store):
         await pilot.press("l")
         assert app.focused.id == "todos" and highlighted(app) is None
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
 
 
 @pytest.mark.parametrize("key", ["left", "h", "escape"])
@@ -143,7 +148,7 @@ def test_leaving_a_pane_focuses_lists(store, inbox, key):
             assert app.focused.id == "lists"
             await pilot.press("r")
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
 
 
 def test_r_toggles_panes_keeping_focus_side(store, repeating):
@@ -157,7 +162,7 @@ def test_r_toggles_panes_keeping_focus_side(store, repeating):
         await pilot.press("r")
         assert switcher.current == "todos" and app.focused.id == "todos"
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
 
 
 def test_vim_movement(store):
@@ -170,7 +175,7 @@ def test_vim_movement(store):
             await pilot.press(key)
             assert lists.highlighted == expected
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
 
 
 def test_cursor_skips_date_titles(store, dated):
@@ -181,7 +186,7 @@ def test_cursor_skips_date_titles(store, dated):
         await pilot.press("k", "k", "g")
         assert highlighted(app) == label("b")
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
 
 
 # Keys act only where they apply
@@ -198,7 +203,7 @@ def test_todo_keys_do_nothing_elsewhere(store, inbox, key):
         assert on_main_screen(app)
         assert prompts(app, "todos") == ["Today", label("a"), label("b")]
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
 
 
 @pytest.mark.parametrize(
@@ -212,7 +217,7 @@ def test_edit_delete_and_mark_need_a_highlight(store, pane, key):
         await pilot.press(key)
         assert on_main_screen(app) and not notifications(app)
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
 
 
 @pytest.mark.parametrize("pane", ["todos", "repeats", "days", "habits"])
@@ -224,7 +229,7 @@ def test_add_needs_a_list(store, pane):
         await pilot.press("a")
         assert on_main_screen(app)
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
 
 
 def test_keys_type_into_prompts(store, inbox):
@@ -232,7 +237,7 @@ def test_keys_type_into_prompts(store, inbox):
         await pilot.press("l", "a", *"aedhjklgGr#", "space", "full_stop", "comma", "enter")
         assert app.focused.id == "todos"
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
     assert texts(store, inbox.id) == ["a", "aedhjklgGr# .,", "b"]
 
 
@@ -249,7 +254,7 @@ def test_add_list_appends_and_highlights_it(store, inbox):
         assert highlighted(app, "lists") == "Home" and app.focused.id == "lists"
         assert prompts(app, "todos") == []
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
 
 
 def test_rename_list(store, inbox):
@@ -259,7 +264,7 @@ def test_rename_list(store, inbox):
         await type_in_prompt(pilot, "Job", clear=True)
         assert prompts(app, "lists") == ["Job"] and prompts(app, "todos")[1:] == [label("a"), label("b")]
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
 
 
 @pytest.mark.parametrize("yes", ["y", "enter"])
@@ -276,7 +281,7 @@ def test_delete_list_after_confirming_shows_the_next(store, inbox, yes):
         assert prompts(app, "lists") == ["Work"] and highlighted(app, "lists") == "Work"
         assert prompts(app, "todos") == ["Today", label("report")]
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
     assert [l.name for l in store.lists()] == ["Work"]
 
 
@@ -289,7 +294,7 @@ def test_deleting_the_last_list_empties_the_panes(store):
         await pilot.press("r")
         assert prompts(app, "repeats") == []
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
     assert store.lists() == []
 
 
@@ -301,7 +306,7 @@ def test_first_list_then_todo(store):
         await type_in_prompt(pilot, "milk")
         assert prompts(app, "todos") == ["Today", label("milk")]
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
 
 
 # Todos
@@ -316,7 +321,7 @@ def test_add_without_highlight_appends_for_today(store, dated):
         assert prompts(app, "todos") == ["Today", label("b"), label("new"), "Tomorrow", label("a"), label("c")]
         assert highlighted(app) == label("new")
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
 
 
 def test_add_inserts_below_highlighted_on_its_date(store, dated):
@@ -325,7 +330,7 @@ def test_add_inserts_below_highlighted_on_its_date(store, dated):
         await type_in_prompt(pilot, "new")
         assert prompts(app, "todos")[3:] == [label("a"), label("new"), label("c")]
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
     assert texts(store, dated.id) == ["a", "new", "b", "c"]
 
 
@@ -337,7 +342,7 @@ def test_add_below_unscheduled_stays_unscheduled(store):
         await type_in_prompt(pilot, "b")
         assert prompts(app, "todos") == ["No date", label("a"), label("b")]
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
 
 
 @pytest.mark.parametrize("key", ["e", "enter"])
@@ -348,7 +353,7 @@ def test_edit_todo(store, inbox, key):
         await type_in_prompt(pilot, "c", clear=True)
         assert highlighted(app) == label("c")
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
     assert texts(store, inbox.id) == ["a", "c"]
 
 
@@ -358,7 +363,7 @@ def test_blank_todo_text_is_refused(store, inbox):
         assert isinstance(app.screen, TextPrompt)
         assert notifications(app) == ["Text must not be blank"]
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
     assert texts(store, inbox.id) == ["a", "b"]
 
 
@@ -387,13 +392,13 @@ def test_todos_done_before_today_are_hidden_until_f(store, old_done):
         assert prompts(app, "todos") == hidden and highlighted(app) == label("late", done=True)
         await pilot.press("f")
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
     assert store.meta("show_old_done") == "1"
 
     async def remembered(app, pilot):
         assert prompts(app, "todos") == shown
 
-    run(KansoApp(store), remembered)
+    run(tui(store), remembered)
 
 
 def test_add_below_a_todo_counts_hidden_ones(store, old_done):
@@ -403,7 +408,7 @@ def test_add_below_a_todo_counts_hidden_ones(store, old_done):
         await pilot.press("f")
         assert prompts(app, "todos")[1:4] == [label("old", done=True), label("late", done=True), label("new")]
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
     assert texts(store, old_done.id) == ["old", "late", "new", "open"]
 
 
@@ -416,7 +421,7 @@ def test_highlight_of_a_hidden_todo_is_dropped_on_redraw(store, old_done):
         pane.show(pane.current)
         assert highlighted(app) is None
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
 
 
 def test_space_toggles_done_last_of_the_done_and_reopens_first_of_the_open(store, inbox):
@@ -435,7 +440,7 @@ def test_space_toggles_done_last_of_the_done_and_reopens_first_of_the_open(store
         assert shown(app) == [label("a", done=True), label("b"), label("c")]
         assert highlighted(app) == label("b")
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
     assert [(t.text, t.done, t.completed_at) for t in store.todos(inbox.id)] == [
         ("b", False, None),
         ("c", False, None),
@@ -474,7 +479,7 @@ def test_move_reorders_within_its_group(store, grouped, down, up):
         await pilot.press("G", up)  # u, within tomorrow
         assert shown_todos(app)[6:] == ["Tomorrow", "u", "t"]
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
     assert "".join(texts(store, grouped.id)) == "abcedut"
 
 
@@ -488,7 +493,7 @@ def test_move_lists_keeping_what_is_shown(store, inbox):
         await pilot.press("J", "K", "K")  # last stays last, first stays first
         assert prompts(app, "lists") == ["Inbox", "Work"]
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
     assert [l.name for l in store.lists()] == ["Inbox", "Work"]
 
 
@@ -502,7 +507,7 @@ def test_move_repeats(store, repeating):
         assert prompts(app, "repeats") == ["y  Daily ", "x  Daily ", "z  Daily "]
         assert highlighted(app, "repeats") == "x  Daily "
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
     assert [r.text for r in store.repeats(repeating.id)] == ["y", "x", "z"]
 
 
@@ -519,7 +524,7 @@ def test_move_needs_a_highlight(store, pane):
         await pilot.press("J", "K")
         assert on_main_screen(app)
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
 
 
 @pytest.mark.parametrize("key, days", [("full_stop", 1), ("comma", -1)])
@@ -528,7 +533,7 @@ def test_shift_date(store, inbox, key, days):
         await pilot.press("l", "j", key, key)
         assert highlighted(app) == label("b")
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
     assert [t.scheduled_at for t in store.todos(inbox.id)] == [TODAY, TODAY + timedelta(days=2 * days)]
 
 
@@ -542,7 +547,7 @@ def test_delete_highlights_next_or_previous_as_shown(store, dated, start, shown,
         assert prompts(app, "todos") == [s if len(s) > 1 else label(s) for s in shown]
         assert highlighted(app) == label(next_highlight)
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
 
 
 def test_delete_last_todo(store):
@@ -552,7 +557,7 @@ def test_delete_last_todo(store):
         await pilot.press("l", "d", "y")
         assert prompts(app, "todos") == [] and highlighted(app) is None
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
 
 
 @pytest.mark.parametrize("pane, question", [("todos", 'Delete "a"?'), ("repeats", 'Delete repeat "x"? The todos it added stay.')])
@@ -569,7 +574,7 @@ def test_deleting_needs_confirmation(store, repeating, pane, question, no):
         await pilot.press(no)
         assert on_main_screen(app) and app.focused.id == pane
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
     assert texts(store, repeating.id) == ["a", "x", "y"] and len(store.repeats(repeating.id)) == 2
 
 
@@ -588,7 +593,7 @@ def test_edit_labels_prefilled_completed_and_saved(store, inbox):
         await pilot.press("tab", "enter")
         assert highlighted(app) == label("b") + "  #work "
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
     assert [t.labels for t in store.todos(inbox.id)] == [["home", "work"], ["work"]]
 
 
@@ -600,7 +605,7 @@ def test_duplicate_copies_below_and_highlights_the_copy(store, dated):
         assert prompts(app, "todos")[3:] == [label("a") + "  #home ", label("a") + "  #home ", label("c")]
         assert app.query_one("#todos", OptionList).highlighted == 4
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
     assert texts(store, dated.id) == ["a", "a", "b", "c"]
 
 
@@ -609,7 +614,7 @@ def test_duplicating_a_repeating_todo_is_refused(store, repeating):
         await pilot.press("l", "y")
         assert on_main_screen(app) and len(notifications(app)) == 1
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
     assert texts(store, repeating.id) == ["x", "y"]
 
 
@@ -618,7 +623,7 @@ def test_invalid_label_is_reported_and_prompt_stays(store, inbox):
         await pilot.press("l", "number_sign", *"x" * 51, "enter")
         assert isinstance(app.screen, TextPrompt) and len(notifications(app)) == 1
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
     assert [t.labels for t in store.todos(inbox.id)] == [[], []]
 
 
@@ -639,7 +644,7 @@ def test_add_repeat_spawns_todays_todo(store, repeating):
         await pilot.press("r")
         assert prompts(app, "todos")[-1] == label("Water ↻")
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
 
 
 @pytest.mark.parametrize("key", ["e", "enter"])
@@ -650,7 +655,7 @@ def test_edit_repeat(store, repeating, key):
         await type_in_prompt(pilot, "z", clear=True)
         assert highlighted(app, "repeats") == "z  Daily "
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
     assert [r.text for r in store.repeats(repeating.id)] == ["x", "z"]
 
 
@@ -665,7 +670,7 @@ def test_editing_a_repeats_todo_edits_the_repeat(store, repeating, key):
         await pilot.press("r")
         assert prompts(app, "todos")[1:] == [label("x ↻"), label("z ↻")]
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
     assert texts(store, repeating.id) == ["x", "z"]
 
 
@@ -675,7 +680,7 @@ def test_delete_repeat_keeps_its_todos(store, repeating, start, next_highlight):
         await open_repeats(pilot, *["j"] * start, "d", "y")
         assert prompts(app, "repeats") == [highlighted(app, "repeats")] == [f"{next_highlight}  Daily "]
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
     assert texts(store, repeating.id) == ["x", "y"]
 
 
@@ -690,13 +695,13 @@ def test_day_change_spawns_and_redraws(store, repeating, monkeypatch):
 
     async def check(app, pilot):
         assert prompts(app, "todos") == []  # starting doesn't recreate deleted occurrences
-        app.check_day()
+        app.node.check_day()
         assert prompts(app, "todos") == []
-        monkeypatch.setattr(app_module, "date", Tomorrow)
-        app.check_day()
+        monkeypatch.setattr(kanso_node, "date", Tomorrow)
+        app.node.check_day()
         assert prompts(app, "todos") == ["Tomorrow", label("x ↻"), label("y ↻")]
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
 
 
 # Sync
@@ -748,7 +753,7 @@ def test_without_sync_connect_shows_id_and_code_only(store):
         await pilot.press("escape")
         assert on_main_screen(app)
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
     assert store.meta("pair_code")
 
 
@@ -756,11 +761,11 @@ def test_a_second_window_leaves_sync_to_the_first(store, network):
     lock = owner_lock(store)
 
     async def check(app, pilot):
-        assert app.node is None
+        assert app.node.sync is None
         await pilot.press("c")
         assert "another kanso window" in dialog_text(app, "status")
 
-    run(KansoApp(store, sync_over(network)), check)
+    run(tui(store, sync_over(network)), check)
     lock.close()
 
 
@@ -780,7 +785,7 @@ def test_connect_pairs_and_remote_changes_appear_keeping_the_highlight(store, in
         assert highlighted(app) == label("b") and app.focused.id == "todos"
         await remote.transport.close()
 
-    run(KansoApp(store, sync_over(network)), check)
+    run(tui(store, sync_over(network)), check)
     lock = owner_lock(store)  # released on exit
     assert lock is not None
     lock.close()
@@ -798,7 +803,7 @@ def test_failed_connect_is_reported_and_dialog_stays(store, network, remote):
         assert "own ID" in notifications(app)[-1]
         await remote.transport.close()
 
-    run(KansoApp(store, sync_over(network)), check)
+    run(tui(store, sync_over(network)), check)
 
 
 @pytest.mark.parametrize("tool, message", [(["true"], "Copied"), (None, "terminal's clipboard")])
@@ -810,7 +815,7 @@ def test_ctrl_y_copies_id_and_code(store, monkeypatch, tool, message):
         assert app.clipboard == f"{device_key(store)} {app.screen.code}"
         assert message in notifications(app)[-1]
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
 
 
 def test_remote_deletion_of_the_shown_list_empties_the_panes(store, inbox, network, remote):
@@ -823,7 +828,7 @@ def test_remote_deletion_of_the_shown_list_empties_the_panes(store, inbox, netwo
         assert prompts(app, "todos") == []
         await remote.transport.close()
 
-    run(KansoApp(store, sync_over(network)), check)
+    run(tui(store, sync_over(network)), check)
 
 
 # Habits
@@ -876,7 +881,7 @@ def test_habit_days_show_below_todos_for_the_last_week(store, habitual):
         await pilot.press("f")
         assert prompts(app, "days")[-1] == "3 older days hidden · f shows"
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
 
 
 def test_todos_and_habits_have_titles(store):
@@ -886,7 +891,7 @@ def test_todos_and_habits_have_titles(store):
         for title, side in zip(titles, ("#top", "#bottom")):
             assert title.region.bottom == app.query_one(side).region.y  # right above its side
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
 
 
 def test_marking_past_days_and_clearing(store, habitual):
@@ -901,7 +906,7 @@ def test_marking_past_days_and_clearing(store, habitual):
         await pilot.press("j", "space")
         assert highlighted(app, "days") == f"{mark('success')} Run"
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
     assert states(store, habitual)[2:4] == [("Read", 1, None), ("Run", 1, "success")]
 
 
@@ -912,7 +917,7 @@ def test_today_cant_be_marked(store, habitual):
         assert notifications(app) == ["Habits can only be marked once the day is over"]
         assert highlighted(app, "days") == f"{mark()} Read"
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
 
 
 def test_r_switches_the_focused_side(store, habitual):
@@ -927,7 +932,7 @@ def test_r_switches_the_focused_side(store, habitual):
         await pilot.press("h", "r")  # from the lists: the top side
         assert (top.current, bottom.current, app.focused.id) == ("repeats", "days", "lists")
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
 
 
 @pytest.mark.parametrize("key", ["e", "enter"])
@@ -941,7 +946,7 @@ def test_editing_a_day_edits_its_habit(store, habitual, key):
         await pilot.press("r")
         assert prompts(app, "days")[2] == f"{mark()} Jog"
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
 
 
 def test_adding_from_the_days_switches_to_the_habits(store, habitual):
@@ -953,7 +958,7 @@ def test_adding_from_the_days_switches_to_the_habits(store, habitual):
         await type_in_prompt(pilot, "Stretch")
         assert app.focused.id == "habits" and highlighted(app, "habits") == "Stretch  Daily "
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
     assert [h.text for h in store.habits(habitual.id)] == ["Read", "Run", "Stretch"]
 
 
@@ -971,7 +976,7 @@ def test_add_habit_spawns_its_day_and_moves(store, habitual):
         await pilot.press("J")  # days follow their habits' order; they don't move
         assert prompts(app, "days")[1:4] == [f"{mark()} Read", f"{mark()} Stretch", f"{mark()} Run"]
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
 
 
 def test_deleting_a_habit_keeps_its_days(store, habitual):
@@ -986,7 +991,7 @@ def test_deleting_a_habit_keeps_its_days(store, habitual):
         await pilot.press("e")
         assert notifications(app) == ["Its habit was deleted"]
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
     assert [t for t, _, _ in states(store, habitual)].count("Run") == 2
 
 
@@ -998,7 +1003,7 @@ def test_deleting_a_day(store, habitual):
         await pilot.press("y")
         assert prompts(app, "days")[3:5] == ["Yesterday", f"{mark()} Read"]
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
     assert ("Run", 1, None) not in states(store, habitual)
 
 
@@ -1010,7 +1015,7 @@ def test_deleting_a_list_counts_its_habits(store, habitual):
         await pilot.press("y")
         assert prompts(app, "days") == []
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
 
 
 def test_a_new_day_spawns_habit_days(store, habitual, monkeypatch):
@@ -1020,11 +1025,11 @@ def test_a_new_day_spawns_habit_days(store, habitual, monkeypatch):
             return TOMORROW
 
     async def check(app, pilot):
-        monkeypatch.setattr(app_module, "date", Tomorrow)
-        app.check_day()
+        monkeypatch.setattr(kanso_node, "date", Tomorrow)
+        app.node.check_day()
         assert prompts(app, "days")[:3] == ["Tomorrow", f"{mark()} Read", f"{mark()} Run"]
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
 
 
 def test_remote_habit_changes_appear(store, habitual, network, remote):
@@ -1037,7 +1042,7 @@ def test_remote_habit_changes_appear(store, habitual, network, remote):
         await eventually(lambda: f"{mark()} Jog" in prompts(app, "days"))
         await remote.transport.close()
 
-    run(KansoApp(store, sync_over(network)), check)
+    run(tui(store, sync_over(network)), check)
 
 
 # Ukrainian layout: the same physical keys work
@@ -1062,7 +1067,7 @@ def test_ukrainian_layout_keys_act_like_us_ones(store, inbox):
         await pilot.press("escape", "к")  # r: repeats
         assert app.query_one("#top", ContentSwitcher).current == "repeats"
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
 
 
 @pytest.mark.parametrize("key, deleted", [("н", True), ("т", False)])
@@ -1071,7 +1076,7 @@ def test_ukrainian_layout_answers_confirmations(store, inbox, key, deleted):
         await pilot.press("д", "в", key)  # l, d, then y or n
         assert on_main_screen(app)
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
     assert texts(store, inbox.id) == (["b"] if deleted else ["a", "b"])
 
 
@@ -1082,5 +1087,5 @@ def test_ukrainian_layout_keys_stay_out_of_the_footer_and_type_into_prompts(stor
         assert shown and all(key.isascii() for key in shown)
         await pilot.press("ф", *"молоко", "enter")
 
-    run(KansoApp(store), check)
+    run(tui(store), check)
     assert texts(store, inbox.id) == ["a", "молоко", "b"]

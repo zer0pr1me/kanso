@@ -1,216 +1,200 @@
 import asyncio
 import os
+import signal
+from datetime import date, timedelta
 
 import pytest
 
+from kanso import __main__ as cli
+from kanso import node as node_module
 from kanso.core.store import Store
-from kanso.sync import node as node_module
-from kanso.sync import protocol
-from kanso.sync.node import SyncNode, owner_lock, start
-from kanso.sync.protocol import new_code
-from kanso.sync.transport import MemoryTransport, SyncError
+from kanso.node import Node
+from kanso.sync import node as sync_node
+from kanso.sync.node import SyncNode, device_key, owner_lock
+from kanso.sync.transport import MemoryTransport
+
+TOMORROW = date.today() + timedelta(days=1)
 
 
-@pytest.fixture(autouse=True)
-def fast(monkeypatch):
-    monkeypatch.setattr(node_module, "POLL", 0.01)
+class Tomorrow(date):
+    @classmethod
+    def today(cls):
+        return TOMORROW
 
 
 @pytest.fixture
-def make(tmp_path):
-    """Makes nodes on one in-memory network; `node.updates` records `on_update` calls."""
-    network, stores = {}, []
-
-    def make(name: str) -> SyncNode:
-        (tmp_path / name).mkdir()
-        store = Store(tmp_path / name / "kanso.db")
-        stores.append(store)
-        updates = []
-        node = SyncNode(store, MemoryTransport(f"key-{name}", network), name, updates.append)
-        node.updates = updates
-        return node
-
-    yield make
-    for store in stores:
-        store.close()
+def repeating(store):
+    todo_list = store.add_list("Inbox")
+    store.add_repeat(todo_list.id, "x")
+    return todo_list
 
 
-async def eventually(condition, timeout: float = 2):
-    async with asyncio.timeout(timeout):
-        while not condition():
-            await asyncio.sleep(0.01)
+def sync_over(network: dict, key: str = "key-a"):
+    async def start(store, on_update):
+        return SyncNode(store, MemoryTransport(key, network), "a", on_update)
+
+    return start
 
 
-def texts(node: SyncNode) -> list[str]:
-    return sorted(t.title for l in node.store.lists() for t in node.store.todos(l.id))
+def days(store, todo_list) -> list[date]:
+    return sorted(t.scheduled_at for t in store.todos(todo_list.id))
 
 
-async def running(*nodes: SyncNode):
-    for n in nodes:
-        n.task = asyncio.create_task(n.run())
-    await eventually(lambda: all(n.store.is_trusted(n.transport.key) for n in nodes))
-
-
-async def stop(*nodes: SyncNode):
-    """Close their transports and wait until they've stopped."""
-    for n in nodes:
-        await n.transport.close()
-        await asyncio.wait_for(n.task, 1)
-
-
-def add_todo(node: SyncNode, text: str):
-    store = node.store
-    lists = store.lists() or [store.add_list("Inbox")]
-    store.add_todo(lists[0].id, text)
-
-
-def test_run_registers_own_device_and_ends_when_the_transport_closes(make):
-    a = make("a")
+def test_start_spawns_the_days_instances(store, repeating, monkeypatch):
+    monkeypatch.setattr(node_module, "date", Tomorrow)
 
     async def main():
-        a.task = asyncio.create_task(a.run())
-        await eventually(lambda: [d.name for d in a.store.devices()] == ["a"])
-        await stop(a)
+        async with Node(store):
+            assert TOMORROW in days(store, repeating)
 
     asyncio.run(main())
 
 
-def test_paired_nodes_send_each_other_their_changes(make):
-    a, b = make("a"), make("b")
-
+def test_without_sync_the_node_only_stores(store):
     async def main():
-        await running(a, b)
-        result = await a.pair(b.transport.key, new_code(b.store))
-        assert result.peer == "b" and a.online == {"key-b"}
-        add_todo(a, "from a")
-        await eventually(lambda: texts(b) == ["from a"])
-        add_todo(b, "from b")
-        await eventually(lambda: texts(a) == ["from a", "from b"])
-        assert True in a.updates and True in b.updates
-        await stop(a, b)
+        async with Node(store) as node:
+            assert node.sync is None and node.sync_note == "Sync is off"
+            assert node.key == device_key(store)
+        lock = owner_lock(store)  # never taken
+        assert lock is not None
+        lock.close()
 
     asyncio.run(main())
 
 
-def test_changes_reach_devices_through_others(make):
-    a, b, c = make("a"), make("b"), make("c")
+def test_a_second_process_leaves_sync_to_the_first(store):
+    lock = owner_lock(store)
 
     async def main():
-        await running(a, b, c)
-        await a.pair(b.transport.key, new_code(b.store))
-        await c.pair(b.transport.key, new_code(b.store))
-        add_todo(c, "from c")
-        await eventually(lambda: texts(a) == ["from c"])
-        await eventually(lambda: a.store.is_trusted("key-c"))  # a learned c's device too
-        await stop(a, b, c)
+        async with Node(store, sync_over({})) as node:
+            assert node.sync is None and "another kanso window" in node.sync_note
+            assert node.key == device_key(store)
+            store.add_list("Still works")
+
+    asyncio.run(main())
+    lock.close()
+    assert [l.name for l in store.lists()] == ["Still works"]
+
+
+def test_syncing_node_owns_the_data_dir_until_stopped(store):
+    network = {}
+
+    async def main():
+        async with Node(store, sync_over(network)) as node:
+            assert node.sync_note is None and node.key == "key-a"
+            assert owner_lock(store) is None
+            assert "key-a" in network
+            async with asyncio.timeout(2):
+                while not store.is_trusted("key-a"):  # registered by the running sync node
+                    await asyncio.sleep(0.01)
+        assert "key-a" not in network and not node.tasks
+
+    asyncio.run(main())
+    lock = owner_lock(store)
+    assert lock is not None
+    lock.close()
+
+
+def test_a_new_day_spawns_and_notifies(store, repeating, monkeypatch):
+    async def main():
+        async with Node(store) as node:
+            updates = []
+            unsubscribe = node.subscribe(updates.append)
+            node.check_day()
+            assert updates == [] and TOMORROW not in days(store, repeating)
+            monkeypatch.setattr(node_module, "date", Tomorrow)
+            node.check_day()
+            assert updates == [True] and TOMORROW in days(store, repeating)
+            unsubscribe()
+            node.notify(False)
+            assert updates == [True]
 
     asyncio.run(main())
 
 
-def test_a_node_pulls_changes_made_while_it_was_offline(make):
-    a, b = make("a"), make("b")
+def test_the_node_checks_the_day_periodically(store, repeating, monkeypatch):
+    monkeypatch.setattr(node_module, "DAY_CHECK", 0.01)
 
     async def main():
-        await running(a, b)
-        await a.pair(b.transport.key, new_code(b.store))
-        await stop(b)
-        add_todo(a, "while b was away")
-        await eventually(lambda: a.online == set() and "Can't reach key-b" in (a.error or ""))
-        b.transport = MemoryTransport("key-b", a.transport.network)
-        await running(b)
-        await eventually(lambda: texts(b) == ["while b was away"])
-        await stop(a, b)
+        async with Node(store) as node:
+            monkeypatch.setattr(node_module, "date", Tomorrow)
+            async with asyncio.timeout(2):
+                while node.day != TOMORROW:
+                    await asyncio.sleep(0.01)
+            assert TOMORROW in days(store, repeating)
 
     asyncio.run(main())
 
 
-def test_failed_pairing_raises_and_the_node_keeps_serving(make):
-    a, b, c = make("a"), make("b"), make("c")
+def test_run_ends_with_the_first_interface_and_stops_the_rest(store):
+    stopped = []
 
+    async def quick(node):
+        assert node.store is store
+        return "done"
+
+    async def forever(node):
+        try:
+            await asyncio.Future()
+        finally:
+            stopped.append(True)
+
+    node = Node(store, sync_over({}))
+    assert asyncio.run(node.run([forever, quick])) == "done"
+    assert stopped == [True] and node.lock is None
+
+
+def test_an_interface_error_propagates_after_the_node_stops(store):
+    async def broken(node):
+        raise ValueError("boom")
+
+    node = Node(store, sync_over({}))
+    with pytest.raises(ValueError, match="boom"):
+        asyncio.run(node.run([broken]))
+    assert node.lock is None and not node.tasks
+
+
+# The executable
+
+
+@pytest.fixture
+def data_dir(tmp_path, monkeypatch):
+    monkeypatch.setenv("KANSO_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr(sync_node, "start", sync_over({}))
+    return tmp_path / "data"
+
+
+def test_kanso_runs_the_tui_by_default(data_dir, monkeypatch):
+    ran = []
+
+    async def tui(node):
+        ran.append(node.sync is not None)
+
+    monkeypatch.setattr(cli.tui, "run", tui)
+    cli.main([])
+    assert ran == [True]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX signals")
+@pytest.mark.parametrize("sig", [signal.SIGINT, signal.SIGTERM])
+def test_headless_kanso_syncs_until_stopped(data_dir, capsys, sig):
     async def main():
-        await running(a, b)
-        with pytest.raises(SyncError, match="Wrong or expired"):
-            await c.pair(b.transport.key, "WRONG-CODE0")
-        with pytest.raises(SyncError, match="Not paired"):
-            await protocol.dial(c.store, c.transport, b.transport.key, "c")
-        await eventually(lambda: "Not paired" in (b.error or ""))
-        await a.pair(b.transport.key, new_code(b.store))
-        assert b.store.is_trusted("key-a") and not b.store.is_trusted("key-c")
-        await stop(a, b)
+        async with Node(Store(), sync_over({})) as node:
+            task = asyncio.create_task(cli.headless(node))
+            while "syncing" not in capsys.readouterr().out:  # printed once the signals are handled
+                await asyncio.sleep(0.01)
+            assert not task.done()
+            os.kill(os.getpid(), sig)
+            assert await asyncio.wait_for(task, 1) is None
+            node.store.close()
 
     asyncio.run(main())
 
 
-def test_stopping_ends_open_sessions(make):
-    a = make("a")
-
-    async def main():
-        await running(a)
-        silent = MemoryTransport("key-x", a.transport.network)
-        await silent.connect("key-a")  # and never says hello
-        await eventually(lambda: a.sessions)
-        [session] = a.sessions
-        await stop(a)
-        assert session.cancelled()
-
-    asyncio.run(main())
-
-
-def test_rounds_repeat_without_changes(make, monkeypatch):
-    monkeypatch.setattr(node_module, "ROUND", 0.02)
-    a = make("a")
-
-    async def main():
-        await running(a)
-        await eventually(lambda: a.updates.count(False) >= 3)
-        assert a.synced_at is not None
-        await stop(a)
-
-    asyncio.run(main())
-
-
-def test_a_peer_running_newer_kanso_is_reported(make):
-    a = make("a")
-    a.report(protocol.Result("b", 0, peer_newer=True))
-    assert "newer kanso" in a.error
-
-
-# Owner lock
-
-
-def test_only_one_process_owns_the_data_dir(tmp_path):
-    store = Store(tmp_path / "kanso.db")
-    first = owner_lock(store)
-    assert first is not None and owner_lock(store) is None
-    first.close()
-    second = owner_lock(store)
-    assert second is not None
-    second.close()
+def test_headless_kanso_refuses_when_another_process_syncs(data_dir):
+    store = Store()
+    lock = owner_lock(store)  # held by "another process"; outlives its store
     store.close()
-
-
-# Real network
-
-
-@pytest.mark.skipif(not os.environ.get("KANSO_NETWORK_TESTS"), reason="needs internet; set KANSO_NETWORK_TESTS=1")
-def test_iroh_nodes_pair_and_sync(tmp_path):
-    a, b = Store(tmp_path / "a.db"), Store(tmp_path / "b.db")
-
-    async def main():
-        nodes = [await start(store, lambda _: None) for store in (a, b)]
-        tasks = [asyncio.create_task(n.run()) for n in nodes]
-        await nodes[1].transport.endpoint.online()
-        a.add_todo(a.add_list("Inbox").id, "over iroh")
-        await nodes[0].pair(nodes[1].transport.key, new_code(b))
-        await eventually(lambda: [t.text for l in b.lists() for t in b.todos(l.id)] == ["over iroh"], 30)
-        key = nodes[0].transport.key
-        for n in nodes:
-            await n.transport.close()
-        await asyncio.gather(*tasks)
-        restarted = await start(a, lambda _: None)
-        assert restarted.transport.key == key
-        await restarted.transport.close()
-
-    asyncio.run(main())
-    a.close()
-    b.close()
+    with pytest.raises(SystemExit, match="Another kanso process already syncs"):
+        cli.main(["--no-tui"])
+    lock.close()

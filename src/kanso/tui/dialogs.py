@@ -15,8 +15,7 @@ from textual.screen import ModalScreen
 from textual.widgets import ContentSwitcher, Input, RadioButton, RadioSet, Static
 
 from kanso.core.models import Repeat, Scheduled
-from kanso.core.store import Store
-from kanso.sync.node import SyncNode
+from kanso.node import Node
 from kanso.sync.protocol import CODE_TTL, new_code
 from kanso.sync.transport import SyncError
 from kanso.tui.widgets import VimRadioSet, VimSelectionList, with_layouts
@@ -186,7 +185,7 @@ class ConnectDialog(ModalScreen[None]):
     """Shows this device's ID and a fresh pairing code for another device to connect with,
     and connects to another device by its ID and code, joining the two networks.
 
-    Without a sync node (`note` says why), only shows the ID and code.
+    Without sync (the node's `sync_note` says why), only shows the ID and code.
     """
 
     BINDINGS = [("escape", "dismiss", "Close"), Binding("ctrl+y", "copy", "Copy ID and code")]
@@ -197,20 +196,20 @@ class ConnectDialog(ModalScreen[None]):
     ConnectDialog #status { color: $text-muted; margin-top: 1; }
     """
 
-    def __init__(self, store: Store, key: str, node: SyncNode | None, note: str | None = None):
+    def __init__(self, node: Node):
         super().__init__()
-        self.key, self.node, self.note = key, node, note
-        self.code = new_code(store)
+        self.key, self.node = node.key, node
+        self.code = new_code(node.store)
         self.peer = Input(placeholder="Other device's ID", id="peer")
         self.peer_code = Input(placeholder="Its code", id="code")
-        self.status = Static(note or "", id="status")
+        self.status = Static(node.sync_note or "", id="status")
 
     def compose(self) -> ComposeResult:
         with Vertical():
             yield Static("This device", classes="title")
             yield Static(self.key, id="key")
             yield Static(f"Code {self.code}, valid {CODE_TTL // 60} minutes (ctrl+y copies both)", id="own-code")
-            if self.node:
+            if self.node.sync:
                 yield Static("Connect to", classes="title")
                 yield self.peer
                 yield self.peer_code

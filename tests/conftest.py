@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import nullcontext
 
 import pytest
 import textual._wait
@@ -35,10 +36,10 @@ def texts(store, list_id) -> list[str]:
 
 
 def run(app, check):
-    """Run `app` headless and await `check(app, pilot)` once it has settled."""
+    """Run `app` headless, on its running node if it has one, and await `check(app, pilot)` once it has settled."""
 
     async def main():
-        async with app.run_test() as pilot:
+        async with getattr(app, "node", nullcontext()), app.run_test() as pilot:
             await pilot.pause()
             await check(app, pilot)
 
