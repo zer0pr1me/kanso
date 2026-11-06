@@ -6,7 +6,7 @@ Kanso is a P2P node at its base, in one executable, `kanso`. The node runs as a 
 
 - `node.py`: `NodeView` is what interfaces see: store, device key, sync status, `subscribe` for changes from elsewhere, and `pair`. `Node` is the node itself. It owns the store, sync (when its process owns the data dir, via `owner_lock`) and the day rollover (`check_day` spawns each new day's instances). `Node.run` runs the daemon's features, each an `async (node) -> result`, until the first one returns.
 - `control.py`: the daemon (`serve`, its control feature) and how other processes reach it. It listens on localhost; `daemon.json` holds the port and the token. One JSON request per connection: `watch`, `status`, `pair` or `stop`. `NodeClient` is the `NodeView` for other processes: the data goes through their own `Store` on the shared database, and status and pairing go through the daemon. `link` starts the daemon if none runs, or falls back to a local `Node` without sync.
-- `__main__.py`: the CLI: `kanso` (the TUI), `kanso start [--foreground]`, `kanso stop`.
+- `__main__.py`: the CLI: `kanso` (the TUI), `kanso start [--foreground]`, `kanso stop`, `kanso help [command]` (also `kanso <command> help`). `parser()` builds it.
 - `core/`: no UI dependencies; the part future frontends (web, mobile) build on.
   - `store.py`: `Store`, the database and every operation on it. UIs call only this.
     Several processes (the daemon, TUIs) share the database, each with its own `Store`. Every public method is one `operation`: a write-locked transaction that first drops the cached records if another process changed the database since. Keep any new public method that way, and keep the session from holding transactions between operations.
@@ -24,6 +24,8 @@ Kanso is a P2P node at its base, in one executable, `kanso`. The node runs as a 
 - `web.py`: `kanso-web`, which serves the TUI in the browser via textual-serve, with one `kanso` TUI process per tab attached to the daemon. It is still separate for now: the real web interface should become a daemon feature (`kanso web-app start`).
 
 How to run the app is documented in `README.md`. Keep it up to date whenever commands, ports, requirements, or setup steps change.
+
+The CLI's help is part of every feature. Each command (added with `command` in `parser()`) gets a one-line help for the command list and a description for its own help, and each flag or argument gets a help. Change them whenever behavior changes, and keep the module docstring (the top-level help) true. `test_every_command_and_flag_has_help` fails on a missing help.
 
 # Code style
 

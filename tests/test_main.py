@@ -1,3 +1,4 @@
+import argparse
 import os
 import signal
 import threading
@@ -90,3 +91,59 @@ def test_the_foreground_daemon_refuses_when_another_runs(data_dir):
     with pytest.raises(SystemExit, match="Another kanso daemon syncs this data directory"):
         cli.main(["start", "--foreground"])
     lock.close()
+
+
+# Help
+
+
+def help_text(capsys, argv: list[str]) -> str:
+    try:
+        cli.main(argv)
+    except SystemExit as exit:  # argparse's --help
+        assert exit.code == 0
+    return capsys.readouterr().out
+
+
+def subcommands(parser) -> argparse._SubParsersAction:
+    [commands] = [a for a in parser._actions if isinstance(a, argparse._SubParsersAction)]
+    return commands
+
+
+@pytest.mark.parametrize("argv", [["help"], ["--help"], ["-h"]])
+def test_help_lists_every_command(data_dir, capsys, argv):
+    text = help_text(capsys, argv)
+    assert text.startswith("usage: kanso [<command>] [help]")
+    assert "opens the terminal UI" in text and "kanso <command> help" in text
+    for name in subcommands(cli.parser()).choices:
+        assert f"    {name} " in text
+    assert not data_dir.exists()  # help opens no store
+
+
+@pytest.mark.parametrize("name", ["start", "stop", "help"])
+def test_each_command_explains_itself(data_dir, capsys, name):
+    forms = [help_text(capsys, argv) for argv in ([name, "help"], ["help", name], [name, "--help"])]
+    assert forms[0] == forms[1] == forms[2]
+    assert forms[0].startswith(f"usage: kanso {name}")
+    assert not data_dir.exists()
+
+
+def test_help_after_flags_still_explains_the_command(data_dir, capsys):
+    assert "--foreground" in help_text(capsys, ["start", "--foreground", "help"])
+
+
+def test_help_for_an_unknown_command_fails(data_dir, capsys):
+    with pytest.raises(SystemExit) as exit:
+        cli.main(["help", "nope"])
+    assert exit.value.code == 2 and "invalid choice: 'nope'" in capsys.readouterr().err
+
+
+def test_every_command_and_flag_has_help():
+    """Keeps the help complete as commands and flags are added."""
+    commands = subcommands(cli.parser())
+    listed = {choice.dest: choice.help for choice in commands._choices_actions}
+    for name, parser in commands.choices.items():
+        assert listed.get(name), f"`kanso {name}` needs a one-line help"
+        assert parser.description, f"`kanso {name}` needs a description"
+        for action in parser._actions:
+            if not isinstance(action, argparse._HelpAction):
+                assert action.help, f"`kanso {name}`'s {action.dest} needs a help"

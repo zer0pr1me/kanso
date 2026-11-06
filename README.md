@@ -16,6 +16,7 @@ uv sync
 uv run kanso          # terminal UI, starting the daemon if it isn't running
 uv run kanso start    # just start the daemon, in the background
 uv run kanso stop     # stop it
+uv run kanso help     # every command, briefly; `kanso <command> help` for one
 uv run kanso-web      # same UI in the browser on http://localhost:8080
 ```
 
