@@ -31,9 +31,15 @@ def test_never_goes_backwards_when_wall_clock_does(monkeypatch):
     assert c.now() == "000000000002000-000001-n1" > first
 
 
-def test_resumes_after_last_stamp(monkeypatch):
+def test_resumes_after_stamps_however_far_ahead(monkeypatch):
     freeze(monkeypatch, 1000)
-    assert Clock("n1", "000000000005000-000003-n1").now() == "000000000005000-000004-n1"
+    c = Clock("n1")
+    c.resume("000000000005000-000003-n1")
+    assert c.now() == "000000000005000-000004-n1"
+    c.resume("000000000001000-000000-n2")  # older: no effect
+    assert c.now() == "000000000005000-000005-n1"
+    c.resume(f"{2000 + clock.MAX_DRIFT_MS:015d}-000000-n2")
+    assert c.now() == f"{2000 + clock.MAX_DRIFT_MS:015d}-000001-n1"
 
 
 def test_node_breaks_ties(monkeypatch):

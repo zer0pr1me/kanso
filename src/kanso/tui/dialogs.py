@@ -15,7 +15,7 @@ from textual.screen import ModalScreen
 from textual.widgets import ContentSwitcher, Input, RadioButton, RadioSet, Static
 
 from kanso.core.models import Repeat, Scheduled
-from kanso.node import Node
+from kanso.node import NodeView
 from kanso.sync.protocol import CODE_TTL, new_code
 from kanso.sync.transport import SyncError
 from kanso.tui.widgets import VimRadioSet, VimSelectionList, with_layouts
@@ -196,7 +196,7 @@ class ConnectDialog(ModalScreen[None]):
     ConnectDialog #status { color: $text-muted; margin-top: 1; }
     """
 
-    def __init__(self, node: Node):
+    def __init__(self, node: NodeView):
         super().__init__()
         self.key, self.node = node.key, node
         self.code = new_code(node.store)
@@ -209,7 +209,7 @@ class ConnectDialog(ModalScreen[None]):
             yield Static("This device", classes="title")
             yield Static(self.key, id="key")
             yield Static(f"Code {self.code}, valid {CODE_TTL // 60} minutes (ctrl+y copies both)", id="own-code")
-            if self.node.sync:
+            if self.node.sync_note is None:
                 yield Static("Connect to", classes="title")
                 yield self.peer
                 yield self.peer_code
@@ -234,10 +234,10 @@ class ConnectDialog(ModalScreen[None]):
 
     async def connect(self, key: str, code: str):
         try:
-            result = await self.node.pair(key, code)
+            peer = await self.node.pair(key, code)
         except SyncError as error:
             self.status.update("")
             self.notify(str(error), severity="error")
             return
-        self.notify(f"Connected to {result.peer}")
+        self.notify(f"Connected to {peer}")
         self.dismiss()

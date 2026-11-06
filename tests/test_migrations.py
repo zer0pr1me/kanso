@@ -3,6 +3,7 @@ import sqlite3
 from contextlib import closing
 
 import pytest
+from sqlalchemy import event
 
 from kanso.core import migrations
 from kanso.core import store as store_module
@@ -32,10 +33,10 @@ def old_db(path):
     store = Store(path)
     inbox = store.add_list("Inbox")
     store.add_todo(inbox.id, "a")
+    store.set_meta("secret_key", "kept")
     store.close()
     sql(path, "ALTER TABLE todo RENAME COLUMN text TO title")
     sql(path, "UPDATE meta SET value = '0' WHERE key = 'schema_version'")
-    return store.clock.node
 
 
 def rename_title(rows):
@@ -62,7 +63,7 @@ def test_upgrades_old_database(path, old_db, monkeypatch):
     store = Store(path)
     [inbox] = store.lists()
     assert [t.text for t in store.todos(inbox.id)] == ["a"]
-    assert store.clock.node == old_db
+    assert store.meta("secret_key") == "kept"
     store.add_todo(inbox.id, "b")
     assert [t.text for t in store.todos(inbox.id)] == ["a", "b"]
     store.close()
@@ -99,12 +100,21 @@ def test_newer_database_is_refused_untouched(path, monkeypatch):
 def test_refused_database_closes_its_connections(path, monkeypatch):
     open_store(path)
     sql(path, "UPDATE meta SET value = '99' WHERE key = 'schema_version'")
-    engines = []
+    opened = []
     connect = store_module.connect
-    monkeypatch.setattr(store_module, "connect", lambda p: engines.append(connect(p)) or engines[0])
+
+    def spy(p):
+        engine = connect(p)
+        event.listen(engine, "connect", lambda conn, _: opened.append(conn))
+        return engine
+
+    monkeypatch.setattr(store_module, "connect", spy)
     with pytest.raises(ValueError, match="newer"):
         Store(path)
-    assert engines[0].pool.checkedin() == 0
+    assert opened
+    for conn in opened:
+        with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+            conn.execute("SELECT 1")
 
 
 def failing(rows):

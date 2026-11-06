@@ -1,17 +1,14 @@
 import asyncio
-import os
-import signal
 from datetime import date, timedelta
 
 import pytest
 
-from kanso import __main__ as cli
+from conftest import eventually, sync_over
 from kanso import node as node_module
-from kanso.core.store import Store
 from kanso.node import Node
-from kanso.sync import node as sync_node
-from kanso.sync.node import SyncNode, device_key, owner_lock
-from kanso.sync.transport import MemoryTransport
+from kanso.sync.node import device_key, owner_lock
+from kanso.sync.protocol import new_code
+from kanso.sync.transport import SyncError
 
 TOMORROW = date.today() + timedelta(days=1)
 
@@ -27,13 +24,6 @@ def repeating(store):
     todo_list = store.add_list("Inbox")
     store.add_repeat(todo_list.id, "x")
     return todo_list
-
-
-def sync_over(network: dict, key: str = "key-a"):
-    async def start(store, on_update):
-        return SyncNode(store, MemoryTransport(key, network), "a", on_update)
-
-    return start
 
 
 def days(store, todo_list) -> list[date]:
@@ -54,7 +44,7 @@ def test_without_sync_the_node_only_stores(store):
     async def main():
         async with Node(store) as node:
             assert node.sync is None and node.sync_note == "Sync is off"
-            assert node.key == device_key(store)
+            assert node.key == device_key(store) and node.online == 0 and node.synced_at is None
         lock = owner_lock(store)  # never taken
         assert lock is not None
         lock.close()
@@ -67,7 +57,7 @@ def test_a_second_process_leaves_sync_to_the_first(store):
 
     async def main():
         async with Node(store, sync_over({})) as node:
-            assert node.sync is None and "another kanso window" in node.sync_note
+            assert node.sync is None and "Another kanso daemon" in node.sync_note
             assert node.key == device_key(store)
             store.add_list("Still works")
 
@@ -81,13 +71,13 @@ def test_syncing_node_owns_the_data_dir_until_stopped(store):
 
     async def main():
         async with Node(store, sync_over(network)) as node:
-            assert node.sync_note is None and node.key == "key-a"
+            assert node.sync_note is None and node.key == "key-app"
             assert owner_lock(store) is None
-            assert "key-a" in network
-            async with asyncio.timeout(2):
-                while not store.is_trusted("key-a"):  # registered by the running sync node
-                    await asyncio.sleep(0.01)
-        assert "key-a" not in network and not node.tasks
+            assert "key-app" in network
+            await eventually(lambda: store.is_trusted("key-app"))  # registered by the running sync node
+            await eventually(lambda: node.synced_at is not None)
+            assert node.online == 0
+        assert "key-app" not in network and not node.tasks
 
     asyncio.run(main())
     lock = owner_lock(store)
@@ -154,47 +144,17 @@ def test_an_interface_error_propagates_after_the_node_stops(store):
     assert node.lock is None and not node.tasks
 
 
-# The executable
 
+def test_pairing_returns_the_peers_name_or_raises(store, tmp_path):
+    network = {}
+    (tmp_path / "b").mkdir()
+    other = type(store)(tmp_path / "b" / "kanso.db")
 
-@pytest.fixture
-def data_dir(tmp_path, monkeypatch):
-    monkeypatch.setenv("KANSO_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setattr(sync_node, "start", sync_over({}))
-    return tmp_path / "data"
-
-
-def test_kanso_runs_the_tui_by_default(data_dir, monkeypatch):
-    ran = []
-
-    async def tui(node):
-        ran.append(node.sync is not None)
-
-    monkeypatch.setattr(cli.tui, "run", tui)
-    cli.main([])
-    assert ran == [True]
-
-
-@pytest.mark.skipif(os.name == "nt", reason="POSIX signals")
-@pytest.mark.parametrize("sig", [signal.SIGINT, signal.SIGTERM])
-def test_headless_kanso_syncs_until_stopped(data_dir, capsys, sig):
     async def main():
-        async with Node(Store(), sync_over({})) as node:
-            task = asyncio.create_task(cli.headless(node))
-            while "syncing" not in capsys.readouterr().out:  # printed once the signals are handled
-                await asyncio.sleep(0.01)
-            assert not task.done()
-            os.kill(os.getpid(), sig)
-            assert await asyncio.wait_for(task, 1) is None
-            node.store.close()
+        async with Node(store, sync_over(network)) as node, Node(other, sync_over(network, "key-b", "b")):
+            with pytest.raises(SyncError, match="Wrong or expired code"):
+                await node.pair("key-b", "WRONG-CODE0")
+            assert await node.pair("key-b", new_code(other)) == "b"
 
     asyncio.run(main())
-
-
-def test_headless_kanso_refuses_when_another_process_syncs(data_dir):
-    store = Store()
-    lock = owner_lock(store)  # held by "another process"; outlives its store
-    store.close()
-    with pytest.raises(SystemExit, match="Another kanso process already syncs"):
-        cli.main(["--no-tui"])
-    lock.close()
+    other.close()

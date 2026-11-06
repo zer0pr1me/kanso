@@ -44,11 +44,9 @@ def test_every_field_of_every_synced_model_persists(path):
     s.mark_habit_day(started_days_ago(s, todo_list, "h", 1).id, "success")
     s.add_device("k", "Laptop")
     before = {m: [r.model_dump() for r in s.db.exec(select(m))] for m in SYNCED_MODELS}
-    node = s.clock.node
     s.close()
     s = Store(path)
     assert {m: [r.model_dump() for r in s.db.exec(select(m))] for m in SYNCED_MODELS} == before
-    assert s.clock.node == node
     s.close()
 
 
@@ -764,3 +762,50 @@ def test_deleting_a_list_hides_its_habits_and_days(store, todo_list):
 def test_habit_days_of_a_list_never_received_are_hidden(store):
     store._save(HabitDay(list_id=uuid4(), habit_id=uuid4(), text="h", day=TODAY, position="V"))
     assert store._live(HabitDay) == []
+
+
+
+# Several processes on one database, each with its own store
+
+
+@pytest.fixture
+def other(path, store):
+    """Another store on the same database, as another process would open it."""
+    s = Store(path)
+    yield s
+    s.close()
+
+
+def test_stores_see_each_others_writes(store, other, todo_list):
+    todo = store.add_todo(todo_list.id, "a")
+    other.update_todo(todo.id, text="b")
+    assert texts(store, todo_list.id) == ["b"]
+    assert todo.text == "b"  # records loaded before reload too
+    other.rename_list(todo_list.id, "Renamed")
+    assert store.lists()[0].name == "Renamed"
+    other.set_meta("k", "v")
+    assert store.meta("k") == "v"
+
+
+def test_reading_never_blocks_another_store_writing(store, other, todo_list):
+    todo = store.add_todo(todo_list.id, "a")
+    other.update_todo(todo.id, text="b")
+    store.lists()
+    assert todo.text == "b"  # a lazy load, outside any operation, leaves a read open
+    other.update_todo(todo.id, text="c")
+    store.update_todo(todo.id, done=True)  # writes after the other store's change
+    assert [(t.text, t.done) for t in other.todos(todo_list.id)] == [("c", True)]
+
+
+def test_a_failed_operation_leaves_the_database_free(store, other, todo_list):
+    with pytest.raises(ValueError):
+        store.add_list(" ")
+    other.add_list("Next")
+    assert [l.name for l in store.lists()] == ["Inbox", "Next"]
+
+
+def test_stores_stamp_after_each_other_under_their_own_nodes(store, other, todo_list):
+    assert store.clock.node != other.clock.node
+    other.clock.millis += 10 * 60 * 1000  # ahead, as a faster clock would be
+    ahead = other.add_list("Ahead")
+    assert store.add_list("After").modified_at > ahead.modified_at

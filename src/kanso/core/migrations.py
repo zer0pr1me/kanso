@@ -68,7 +68,7 @@ def upgrade(rows: Rows, version: int) -> Rows:
 
 def migrate(engine: Engine):
     """Create the schema, or upgrade an existing database to it, atomically."""
-    with engine.begin() as conn:
+    with engine.connect().execution_options(immediate=True) as conn, conn.begin():
         tables = inspect(conn).get_table_names()
         version = stored_version(conn) if "meta" in tables else 0 if tables else current_version()
         if version == current_version():

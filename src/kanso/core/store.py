@@ -2,6 +2,7 @@ import json
 import os
 from collections.abc import Callable
 from datetime import date, timedelta
+from functools import wraps
 from itertools import takewhile
 from pathlib import Path
 from uuid import UUID, uuid4, uuid5
@@ -9,6 +10,7 @@ from uuid import UUID, uuid4, uuid5
 from platformdirs import user_data_path
 from sqlalchemy import Engine, event, inspect
 from sqlalchemy import text
+from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, create_engine, func, select
 
 from kanso.core import position
@@ -52,19 +54,24 @@ def default_path() -> Path:
 
 
 def connect(path: Path) -> Engine:
-    """SQLite engine whose transactions also cover DDL, so migrations are atomic.
+    """SQLite engine on one connection, in WAL mode, whose transactions also cover DDL, so
+    migrations are atomic.
 
-    pysqlite otherwise commits before DDL statements; this is SQLAlchemy's documented fix.
+    pysqlite otherwise commits before DDL statements; this is SQLAlchemy's documented fix. WAL
+    lets other processes on the database read while one writes. Connections with the execution
+    option `immediate` begin by taking the write lock, waiting for it if another process holds
+    it, rather than failing when they write after reading what that process changed since.
     """
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(f"sqlite:///{path}", poolclass=StaticPool)
 
     @event.listens_for(engine, "connect")
-    def disable_pysqlite_transactions(dbapi_connection, _):
+    def configure(dbapi_connection, _):
         dbapi_connection.isolation_level = None
+        dbapi_connection.execute("PRAGMA journal_mode=WAL")
 
     @event.listens_for(engine, "begin")
     def begin(conn):
-        conn.exec_driver_sql("BEGIN")
+        conn.exec_driver_sql("BEGIN IMMEDIATE" if conn.get_execution_options().get("immediate") else "BEGIN")
 
     return engine
 
@@ -120,8 +127,36 @@ def changed_fields(record: Record) -> set[str]:
     return {a.key for a in state.attrs if not state.persistent or a.history.has_changes()} - UNSTAMPED
 
 
+def operation(method):
+    """Make a public `Store` method one operation on the database, as other processes, such as
+    the daemon and the TUI, share it: each runs in its own write-locked transaction, first
+    dropping what the session cached if another process changed the database since, and then
+    ends, so it holds neither the lock nor a stale snapshot between operations."""
+
+    @wraps(method)
+    def run(self: "Store", *args, **kwargs):
+        if self._depth:
+            return method(self, *args, **kwargs)
+        self.db.commit()  # ends a transaction a lazy load began since
+        self._depth += 1
+        try:
+            self._catch_up()
+            result = method(self, *args, **kwargs)
+        except BaseException:
+            self.db.rollback()
+            raise
+        finally:
+            self._depth -= 1
+        self.db.commit()
+        return result
+
+    return run
+
+
 class Store:
-    """The local database and every operation on it. UIs talk only to this."""
+    """The local database and every operation on it. UIs talk only to this.
+
+    Several processes may open the same database at once, each as its own `Store`."""
 
     def __init__(self, path: Path | None = None):
         self.path = path or default_path()
@@ -134,7 +169,22 @@ class Store:
         # No autoflush: a query between changing a record and `_save` would write the change
         # unstamped and hide it from `changed_fields`.
         self.db = Session(self.engine, expire_on_commit=False, autoflush=False)
-        self.clock = Clock(self.meta("node", lambda: uuid4().hex), self.last_change())
+        self._depth, self._data_version = 0, None
+        # Its own node, so stores open at once on one database never mint equal stamps.
+        self.clock = Clock(uuid4().hex)
+        self.last_change()  # an operation, so it catches the clock up
+
+    def _catch_up(self):
+        """Begin the operation's transaction; if another process changed the database since the
+        last one, drop the cached records and move the clock past its stamps."""
+        conn = self.db.connection(execution_options={"immediate": True})
+        version = conn.exec_driver_sql("PRAGMA data_version").scalar()
+        if version != self._data_version:
+            if self._data_version is not None:
+                self.db.expire_all()
+            self._data_version = version
+            if newest := self.last_change():
+                self.clock.resume(newest)
 
     def last_change(self) -> str | None:
         """The newest stamp of any synced row, written here or merged from elsewhere."""
@@ -508,3 +558,8 @@ class Store:
         self.db.commit()
         self.db.expire_all()
         return changed
+
+
+for _name, _method in list(vars(Store).items()):
+    if callable(_method) and not _name.startswith("_") and _name != "close":
+        setattr(Store, _name, operation(_method))

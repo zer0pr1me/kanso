@@ -13,15 +13,19 @@ Personal, local-first todo app with a terminal UI, also served in the browser.
 
 ```sh
 uv sync
-uv run kanso          # terminal UI
-uv run kanso --no-tui # no UI: just store and sync, until ctrl+c or SIGTERM
+uv run kanso          # terminal UI, starting the daemon if it isn't running
+uv run kanso start    # just start the daemon, in the background
+uv run kanso stop     # stop it
 uv run kanso-web      # same UI in the browser on http://localhost:8080
 ```
 
-`kanso` is a node: it stores your data and syncs it with your other devices, with
-interfaces on top (the terminal UI by default). Without the UI it suits an
-always-online device, such as a home server, that the others can sync through;
-pair it by running `kanso` with the UI there once.
+kanso's daemon runs in the background: it stores your data and syncs it with
+your other devices, also while no UI is open. `kanso` opens the terminal UI on
+it; quitting the UI leaves the daemon running. Each data directory has one
+daemon, however many UIs are open on it. On an always-online device, such as a
+home server, the others can sync through it. To run the daemon from a service
+manager such as systemd, use `kanso start --foreground`, which stops on SIGTERM.
+It logs to `daemon.log` in the data directory.
 
 Data is stored in a local SQLite database in the user data directory
 (`~/.local/share/kanso/kanso.db` on Linux). Set `KANSO_DATA_DIR` to keep it
@@ -29,7 +33,7 @@ elsewhere: `KANSO_DATA_DIR=~/kanso uv run kanso`.
 
 ## Sync between devices
 
-Devices sync peer to peer while kanso runs on them. To join two devices, and
+Devices sync peer to peer while their kanso daemons run. To join two devices, and
 with them every device each one already syncs with:
 
 1. On one device, press `c`. It shows this device's ID and a pairing code,
@@ -45,9 +49,11 @@ both survive. The header shows how many devices are online.
   through NATs, with help from n0's public relays and DNS. Traffic is encrypted
   end to end; the relays see only device IDs and IP addresses.
 - Paired devices are fully trusted: any of them can change or delete anything.
-- Only one kanso process per data directory syncs (a `sync.lock` there says
-  which); other windows, such as browser tabs of `kanso-web`, share its data.
-  `kanso --no-tui` refuses to start while another process syncs.
+- The daemon is the only kanso process of its data directory that syncs (a
+  `sync.lock` there says which); UIs, such as browser tabs of `kanso-web`, share
+  its data. UIs reach it on localhost, with a token from `daemon.json` in the
+  data directory, readable only by you. If the daemon can't start, the UI still
+  works, without sync.
 - Don't copy the data directory to another machine, or keep it in a synced
   folder: the copy would be the same device as far as sync is concerned. Pair
   the machines instead.

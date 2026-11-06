@@ -4,7 +4,7 @@ from textual.containers import Horizontal, Vertical
 from textual.widgets import ContentSwitcher, Footer, Header, OptionList, Static
 
 from kanso.core.models import Scheduled
-from kanso.node import Node
+from kanso.node import NodeView
 from kanso.tui.dialogs import ConnectDialog
 from kanso.tui.panes import HabitDaysPane, HabitsPane, ListContentsPane, ListsPane, RepeatsPane, TodosPane
 
@@ -22,8 +22,8 @@ class KansoApp(App):
     #todos > .option-list--option-disabled, #days > .option-list--option-disabled { color: $text-accent; text-style: bold; }
     """
 
-    def __init__(self, node: Node):
-        """An interface of the running `node`."""
+    def __init__(self, node: NodeView):
+        """An interface of `node`, entered while the app runs."""
         super().__init__()
         self.node, self.store = node, node.store
         self.unsubscribe = lambda: None
@@ -46,16 +46,19 @@ class KansoApp(App):
     def on_mount(self):
         self.query_one(ListsPane).show()
         self.unsubscribe = self.node.subscribe(self.node_updated)
+        self.node_updated(False)
 
     def on_unmount(self):
         self.unsubscribe()
 
     def node_updated(self, changed: bool):
         """Show the sync status; after changes from elsewhere, redraw keeping the highlights."""
-        if sync := self.node.sync:
-            online = len(sync.online)
-            synced = f" · synced {sync.synced_at:%H:%M}" if sync.synced_at else ""
-            self.sub_title = f"{online} device{'' if online == 1 else 's'} online{synced}"
+        if not self.is_running:  # shutting down: the panes may be gone already
+            return
+        node, self.sub_title = self.node, ""
+        if node.sync_note is None:
+            synced = f" · synced {node.synced_at:%H:%M}" if node.synced_at else ""
+            self.sub_title = f"{node.online} device{'' if node.online == 1 else 's'} online{synced}"
         if changed:
             lists = self.query_one(ListsPane)
             lists.show(lists.current)
@@ -79,6 +82,8 @@ class KansoApp(App):
     def show_list(self):
         """Show the highlighted list's contents, if any; if it's the same list as before
         (redrawn), keep their highlights."""
+        if not self.is_running:  # a redraw's message, arriving while shutting down
+            return
         list_id = (current := self.query_one(ListsPane).current) and current.id
         for pane in self.query(ListContentsPane):
             same = pane.list_id == list_id
@@ -134,6 +139,6 @@ class KansoApp(App):
         self.open_templates(pane_id).action_add()
 
 
-async def run(node: Node):
+async def run(node: NodeView):
     """The TUI as an interface of `node`, until the user quits."""
     await KansoApp(node).run_async()

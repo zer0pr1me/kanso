@@ -10,9 +10,9 @@ MAX_DRIFT_MS = 60 * 60 * 1000
 
 
 class Clock:
-    def __init__(self, node: str, last: str | None = None):
+    def __init__(self, node: str):
         self.node = node
-        self.millis, self.counter = (int(part) for part in last.split("-")[:2]) if last else (0, 0)
+        self.millis, self.counter = 0, 0
 
     def now(self) -> str:
         millis = time.time_ns() // 1_000_000
@@ -28,7 +28,11 @@ class Clock:
         Refuses stamps over an hour ahead of our wall time: a replica with a wrong clock
         would otherwise drag every later stamp, everywhere, into its future.
         """
-        millis, counter = (int(part) for part in stamp.split("-")[:2])
-        if millis > time.time_ns() // 1_000_000 + MAX_DRIFT_MS:
+        if int(stamp.split("-")[0]) > time.time_ns() // 1_000_000 + MAX_DRIFT_MS:
             raise ValueError(f"Stamp {stamp} is over an hour ahead of this clock")
+        self.resume(stamp)
+
+    def resume(self, stamp: str):
+        """Move past `stamp`, already in our database, however far ahead."""
+        millis, counter = (int(part) for part in stamp.split("-")[:2])
         self.millis, self.counter = max((self.millis, self.counter), (millis, counter))

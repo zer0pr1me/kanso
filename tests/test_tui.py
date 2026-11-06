@@ -4,8 +4,10 @@ from datetime import date, timedelta
 import pytest
 from textual.widgets import ContentSwitcher, Input, OptionList, Static
 
-from conftest import notifications, run, texts
+from conftest import eventually, notifications, run, serving, sync_over, texts
+from kanso import control
 from kanso import node as kanso_node
+from kanso.control import NodeClient
 from kanso.core.store import NAME_MAX, Store
 from kanso.node import Node
 from kanso.sync import node as node_module
@@ -715,15 +717,6 @@ def network(monkeypatch):
     return {}
 
 
-def sync_over(network: dict):
-    """A `start_node` for the app on the in-memory `network`, as key-app."""
-
-    async def start(store, on_update):
-        return SyncNode(store, MemoryTransport("key-app", network), "app", on_update)
-
-    return start
-
-
 @pytest.fixture
 def remote(tmp_path, network):
     """Another device, b, on the network; run it with `b.run()` inside the app's loop."""
@@ -731,12 +724,6 @@ def remote(tmp_path, network):
     store = Store(tmp_path / "b" / "kanso.db")
     yield SyncNode(store, MemoryTransport("key-b", network), "b")
     store.close()
-
-
-async def eventually(condition, timeout: float = 2):
-    async with asyncio.timeout(timeout):
-        while not condition():
-            await asyncio.sleep(0.01)
 
 
 def dialog_text(app, id: str) -> str:
@@ -763,7 +750,7 @@ def test_a_second_window_leaves_sync_to_the_first(store, network):
     async def check(app, pilot):
         assert app.node.sync is None
         await pilot.press("c")
-        assert "another kanso window" in dialog_text(app, "status")
+        assert "Another kanso daemon" in dialog_text(app, "status")
 
     run(tui(store, sync_over(network)), check)
     lock.close()
@@ -789,6 +776,37 @@ def test_connect_pairs_and_remote_changes_appear_keeping_the_highlight(store, in
     lock = owner_lock(store)  # released on exit
     assert lock is not None
     lock.close()
+
+
+def test_through_the_daemon_the_tui_pairs_and_shows_remote_changes(store, path, inbox, network, remote):
+    async def check(app, pilot):
+        asyncio.create_task(remote.run())
+        await eventually(lambda: remote.store.is_trusted("key-b"))
+        await eventually(lambda: app.sub_title.startswith("0 devices online"))
+        await pilot.press("l", "j", "c")
+        assert dialog_text(app, "key") == "key-app"
+        await pilot.press(*"key-b", "enter", *new_code(remote.store), "enter")
+        await eventually(lambda: on_main_screen(app))
+        assert "Connected to b" in notifications(app)
+        await eventually(lambda: app.sub_title.startswith("1 device online · synced "))
+        remote.store.add_todo(remote.store.lists()[0].id, "from b")
+        await eventually(lambda: label("from b") in prompts(app, "todos"))
+        assert highlighted(app) == label("b") and app.focused.id == "todos"
+        await remote.transport.close()
+
+    run(KansoApp(NodeClient(store)), check, serving(path, network))
+
+
+def test_when_the_daemon_stops_the_tui_stops_showing_sync(store, path, network):
+    async def check(app, pilot):
+        await eventually(lambda: app.sub_title.startswith("0 devices online"))
+        assert await control.stop(store)
+        await eventually(lambda: app.sub_title == "")
+        await pilot.press("c")
+        assert "daemon isn't running" in dialog_text(app, "status")
+        assert dialog_text(app, "key") == device_key(store) and not app.screen.query(Input)
+
+    run(KansoApp(NodeClient(store)), check, serving(path, network))
 
 
 def test_failed_connect_is_reported_and_dialog_stays(store, network, remote):

@@ -60,6 +60,33 @@ class Channel:
         await self.pipe.close()
 
 
+class StreamPipe(Pipe):
+    """A pipe over an asyncio stream, as local connections are."""
+
+    def __init__(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+        self.reader, self.writer = reader, writer
+
+    async def write(self, data: bytes):
+        try:
+            self.writer.write(data)
+            await self.writer.drain()
+        except ConnectionError:
+            raise SyncError("Connection lost") from None
+
+    async def read_exact(self, size: int) -> bytes:
+        try:
+            return await self.reader.readexactly(size)
+        except (asyncio.IncompleteReadError, ConnectionError):
+            raise SyncError("Connection lost") from None
+
+    async def close(self):
+        self.writer.close()
+        try:
+            await self.writer.wait_closed()
+        except ConnectionError:
+            pass
+
+
 class Transport(ABC):
     key: str
     """This node's public key, which peers dial."""
