@@ -1,4 +1,5 @@
 import argparse
+import asyncio
 import os
 import signal
 import threading
@@ -6,13 +7,15 @@ import time
 
 import pytest
 
-from conftest import sync_over
+from conftest import eventually, serving, sync_over
 from kanso import __main__ as cli
 from kanso import control
 from kanso.core.store import Store
 from kanso.node import Node
 from kanso.sync import node as sync_node
-from kanso.sync.node import owner_lock
+from kanso.sync.node import SyncNode, device_key, owner_lock
+from kanso.sync.protocol import new_code
+from kanso.sync.transport import MemoryTransport
 
 
 @pytest.fixture
@@ -93,6 +96,105 @@ def test_the_foreground_daemon_refuses_when_another_runs(data_dir):
     lock.close()
 
 
+# Connecting and status, with a daemon serving in the test's loop
+
+NETWORK: dict = {}
+
+
+@pytest.fixture
+def remote(tmp_path):
+    """Another device, b, on the network of the tests' daemons."""
+    NETWORK.clear()
+    (tmp_path / "b").mkdir()
+    store = Store(tmp_path / "b" / "kanso.db")
+    yield SyncNode(store, MemoryTransport("key-b", NETWORK), "b")
+    store.close()
+
+
+async def command(store, *argv: str) -> str | None:
+    args = cli.parser().parse_args(argv)
+    return await args.command(store, args)
+
+
+def with_daemon(path, remote, capsys, check):
+    async def main():
+        async with serving(path, NETWORK):
+            task = asyncio.create_task(remote.run())
+            capsys.readouterr()  # the daemon's own line
+            try:
+                await check()
+            finally:
+                await remote.transport.close()
+                await task
+
+    asyncio.run(main())
+
+
+def test_connect_shows_this_devices_id_and_a_code_others_pair_with(store, path, remote, capsys):
+    async def check():
+        assert await command(store, "connect") is None
+        own, code, hint = capsys.readouterr().out.splitlines()
+        assert own == "This device: key-app" and code.endswith(", valid 10 minutes, once")
+        code = code.removeprefix("Code: ").split(",")[0]
+        assert hint == f"On the other device, run: kanso connect key-app {code}"
+        assert (await remote.pair("key-app", code)).peer == "app"
+        await eventually(lambda: store.is_trusted("key-b"))
+
+    with_daemon(path, remote, capsys, check)
+
+
+def test_connect_pairs_with_another_device_through_the_daemon(store, path, remote, capsys):
+    async def check():
+        assert await command(store, "connect", "key-b", "WRONG-CODE0") == "Refused: Wrong or expired code"
+        assert await command(store, "connect", "key-b", new_code(remote.store)) is None
+        assert capsys.readouterr().out == "Connected to b\n" and store.is_trusted("key-b")
+
+    with_daemon(path, remote, capsys, check)
+
+
+def test_connect_refuses_this_devices_own_id(store, path, remote, capsys):
+    async def check():
+        assert await command(store, "connect", "key-app", "CODE") == "That's this device's own ID"
+
+    with_daemon(path, remote, capsys, check)
+
+
+def test_connect_needs_both_id_and_code(store):
+    assert asyncio.run(command(store, "connect", "key-b")) == "Give both the other device's ID and its code, or neither"
+
+
+@pytest.mark.parametrize("argv", [["connect"], ["connect", "key-b", "CODE"]])
+def test_connect_reports_a_daemon_that_didnt_start(data_dir, monkeypatch, argv):
+    answers(monkeypatch, start=False)
+    with pytest.raises(SystemExit, match=f"can't connect: see {data_dir / 'daemon.log'}"):
+        cli.main(argv)
+
+
+def test_status_of_a_running_daemon_counts_the_devices_online(store, path, remote, capsys):
+    async def check():
+        await command(store, "connect", "key-b", new_code(remote.store))
+        capsys.readouterr()
+        assert await command(store, "status") is None
+        daemon, own, online, synced = capsys.readouterr().out.splitlines()
+        assert daemon == "Daemon: running, syncing" and own == "This device: key-app"
+        assert online == "Devices online: 1 of 1 paired" and synced.startswith("Last synced: 20")
+
+    with_daemon(path, remote, capsys, check)
+
+
+def test_status_without_a_daemon(data_dir, capsys):
+    cli.main(["status"])
+    store = Store()
+    key = device_key(store)
+    store.close()
+    assert capsys.readouterr().out == (
+        "Daemon: not running, so sync is off\n"
+        f"This device: {key}\n"
+        "Devices online: 0 of 0 paired\n"
+        "Last synced: not yet\n"
+    )
+
+
 # Help
 
 
@@ -119,7 +221,7 @@ def test_help_lists_every_command(data_dir, capsys, argv):
     assert not data_dir.exists()  # help opens no store
 
 
-@pytest.mark.parametrize("name", ["start", "stop", "help"])
+@pytest.mark.parametrize("name", ["start", "stop", "status", "connect", "help"])
 def test_each_command_explains_itself(data_dir, capsys, name):
     forms = [help_text(capsys, argv) for argv in ([name, "help"], ["help", name], [name, "--help"])]
     assert forms[0] == forms[1] == forms[2]

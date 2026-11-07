@@ -6,11 +6,14 @@ Its daemon runs in the background, storing your data and syncing it. With no com
 import argparse
 import asyncio
 import sys
+from datetime import datetime
 
 from kanso import control
 from kanso.core.store import Store
 from kanso.node import Node
 from kanso.sync import node as sync_node
+from kanso.sync.protocol import CODE_TTL, new_code
+from kanso.sync.transport import SyncError
 from kanso.tui import app as tui
 
 
@@ -33,6 +36,38 @@ async def start(store: Store, args) -> str | None:
 
 async def stop(store: Store, args) -> str | None:
     print("Stopped the kanso daemon" if await control.stop(store) else "The kanso daemon isn't running")
+
+
+async def connect(store: Store, args) -> str | None:
+    if (args.id is None) != (args.code is None):
+        return "Give both the other device's ID and its code, or neither"
+    if not await control.start(store):
+        return f"The kanso daemon didn't start, so it can't connect: see {control.log_file(store)}"
+    try:
+        key = (await control.ask(store, "status"))["key"]
+        if args.id is None:
+            code = new_code(store)
+            print(f"This device: {key}\nCode: {code}, valid {CODE_TTL // 60} minutes, once")
+            print(f"On the other device, run: kanso connect {key} {code}")
+        elif args.id == key:
+            return "That's this device's own ID"
+        else:
+            print(f"Connected to {await control.NodeClient(store).pair(args.id, args.code)}")
+    except SyncError as error:
+        return str(error)
+
+async def status(store: Store, args) -> str | None:
+    try:
+        node = await control.ask(store, "status")
+    except SyncError:
+        node = None
+    key = node["key"] if node else sync_node.device_key(store)
+    paired = sum(device.key != key for device in store.devices())
+    print(f"Daemon: {'running, syncing' if node else 'not running, so sync is off'}")
+    print(f"This device: {key}")
+    print(f"Devices online: {node['online'] if node else 0} of {paired} paired")
+    synced_at = node and node["synced_at"] and datetime.fromisoformat(node["synced_at"])
+    print(f"Last synced: {f'{synced_at:%Y-%m-%d %H:%M}' if synced_at else 'not yet'}")
 
 
 def parser() -> argparse.ArgumentParser:
@@ -65,6 +100,25 @@ def parser() -> argparse.ArgumentParser:
         "--foreground", action="store_true", help="run it in the foreground instead, until SIGTERM or ctrl+c, as for systemd"
     )
     command("stop", stop, "stop the daemon", "Stop the daemon. UIs open on it keep working, without sync.")
+    command(
+        "status",
+        status,
+        "show whether the daemon runs, and how many devices are online",
+        "Show whether the daemon runs, this device's ID, how many of the paired devices it\n"
+        "reached in its last round, and when it last synced.",
+    )
+    pair = command(
+        "connect",
+        connect,
+        "pair with another device: show this one's ID and code, or connect to another's",
+        "Pair this device with another, joining their networks: from then on they sync with\n"
+        "each other and every device either one already syncs with. Starts the daemon if it\n"
+        "isn't running.\n\n"
+        "  kanso connect            show this device's ID and a fresh pairing code\n"
+        "  kanso connect ID CODE    connect to the device with that ID, using its code",
+    )
+    pair.add_argument("id", nargs="?", help="the other device's ID, as its `kanso connect` shows it")
+    pair.add_argument("code", nargs="?", help="the other device's pairing code")
     explain = command("help", None, "show this help, or a command's", "Show kanso's help, or that of a command.")
     explain.add_argument("topic", nargs="?", choices=list(commands.choices), metavar="command", help="the command to explain")
     explain.set_defaults(helps={None: root, **commands.choices})

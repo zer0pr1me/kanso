@@ -16,6 +16,7 @@ uv sync
 uv run kanso          # terminal UI, starting the daemon if it isn't running
 uv run kanso start    # just start the daemon, in the background
 uv run kanso stop     # stop it
+uv run kanso status   # whether it runs, and how many devices are online
 uv run kanso help     # every command, briefly; `kanso <command> help` for one
 uv run kanso-web      # same UI in the browser on http://localhost:8080
 ```
@@ -41,10 +42,14 @@ with them every device each one already syncs with:
    valid for 10 minutes and usable once (`ctrl+y` copies both).
 2. On the other device, press `c` and enter that ID and code.
 
+Without the UI, e.g. on a home server over ssh, `kanso connect` shows the ID and
+a code, and `kanso connect <ID> <code>` connects to another device; both start
+the daemon if it isn't running.
+
 From then on, changes reach every device within seconds when they're online,
 and as soon as they come back otherwise. When the same field of a todo was
 edited on two devices meanwhile, the later edit wins; edits to different fields
-both survive. The header shows how many devices are online.
+both survive. The header, and `kanso status`, show how many devices are online.
 
 - Connections use [iroh](https://iroh.computer): devices find each other by ID,
   through NATs, with help from n0's public relays and DNS. Traffic is encrypted
