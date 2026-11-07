@@ -15,7 +15,8 @@ from kanso.node import Node
 from kanso.sync import node as sync_node
 from kanso.sync.node import SyncNode, device_key, owner_lock
 from kanso.sync.protocol import new_code
-from kanso.sync.transport import MemoryTransport
+from kanso.sync.transport import MemoryTransport, SyncError
+from kanso.telegram import bot as telegram
 
 
 @pytest.fixture
@@ -208,6 +209,159 @@ def test_status_without_a_daemon(data_dir, capsys):
     )
 
 
+# The Telegram bot
+
+TOKEN = "123:abc-DEF_9"
+
+
+def running_bot(note="running as @kanso_bot", running=True):
+    return {"title": "Telegram bot", "running": running, "note": note}
+
+
+def daemon(monkeypatch, *bots, reload=None):
+    """A daemon that answers status with each of `bots` in turn (then the last), and reload
+    with `reload` (raising it if it's an error); returns the ops it was asked."""
+    asked, states = [], list(bots)
+    answers(monkeypatch, start=True, running=True)
+
+    async def ask(store, op, **fields):
+        asked.append((op, fields))
+        if op == "reload":
+            if isinstance(reload, Exception):
+                raise reload
+            return reload or {}
+        bot = states.pop(0) if len(states) > 1 else states[0] if states else None
+        return {"key": "key-app", "online": 0, "synced_at": None, "changed": False, "features": {"telegram-bot": bot} if bot else {}}
+
+    monkeypatch.setattr(control, "ask", ask)
+    return asked
+
+
+def bot_config(data_dir):
+    store = Store()
+    try:
+        return telegram.config(store)
+    finally:
+        store.close()
+
+
+def test_starting_the_bot_saves_it_reloads_it_and_tells_how_it_runs(data_dir, monkeypatch, capsys):
+    asked = daemon(monkeypatch, running_bot(telegram.STARTING, False), running_bot())
+    sleep = asyncio.sleep
+    monkeypatch.setattr(asyncio, "sleep", lambda seconds: sleep(0))
+    cli.main(["telegram-bot", "start", TOKEN, "-42", "--at", "7:05"])
+    assert capsys.readouterr().out == "Telegram bot: running as @kanso_bot\n"
+    assert bot_config(data_dir) == {"token": TOKEN, "chat": -42, "at": "07:05"}
+    assert asked[0] == ("reload", {"feature": "telegram-bot"})
+    cli.main(["telegram-bot", "start", TOKEN, "42"])
+    assert bot_config(data_dir)["at"] == "09:00"
+
+
+def test_a_bot_that_fails_to_start_says_why(data_dir, monkeypatch):
+    daemon(monkeypatch, running_bot("Telegram refused the token: check it with @BotFather", False))
+    with pytest.raises(SystemExit, match="^Telegram bot: Telegram refused the token"):
+        cli.main(["telegram-bot", "start", TOKEN, "42"])
+    assert bot_config(data_dir) is not None  # kept: `kanso status` keeps telling
+
+
+def test_a_bot_still_starting_is_left_to_status(data_dir, monkeypatch, capsys):
+    daemon(monkeypatch, running_bot(telegram.STARTING, False))
+    monkeypatch.setattr(cli, "BOT_START_TIMEOUT", 0)
+    cli.main(["telegram-bot", "start", TOKEN, "42"])
+    assert capsys.readouterr().out == "Telegram bot: starting; `kanso status` tells how it goes\n"
+
+
+@pytest.mark.parametrize(
+    "reload, error",
+    [
+        (SyncError("Connection lost"), "The kanso daemon runs an older kanso: restart it"),
+        ({"error": "The kanso daemon has no feature 'telegram-bot'"}, "has no feature"),
+    ],
+)
+def test_starting_the_bot_on_a_daemon_without_it_fails(data_dir, monkeypatch, reload, error):
+    daemon(monkeypatch, reload=reload)
+    with pytest.raises(SystemExit, match=error):
+        cli.main(["telegram-bot", "start", TOKEN, "42"])
+
+
+def test_starting_the_bot_without_a_daemon_fails(data_dir, monkeypatch):
+    answers(monkeypatch, start=False)
+    with pytest.raises(SystemExit, match="Saved, but the kanso daemon didn't start, so neither did the bot"):
+        cli.main(["telegram-bot", "start", TOKEN, "42"])
+
+
+@pytest.mark.parametrize(
+    "argv, error",
+    [
+        ([TOKEN, "42", "--at", "25:00"], "not a time"),
+        ([TOKEN, "42", "--at", "noon"], "not a time"),
+        ([TOKEN, "me"], "invalid int value"),
+        (["abc", "42"], "not a bot token"),
+        (["1:a/b", "42"], "not a bot token"),
+        ([TOKEN], "required: CHAT_ID"),
+    ],
+)
+def test_bad_bot_settings_are_refused(data_dir, capsys, argv, error):
+    with pytest.raises(SystemExit) as exit:
+        cli.main(["telegram-bot", "start", *argv])
+    assert exit.value.code == 2 and error in capsys.readouterr().err
+    assert not data_dir.exists()
+
+
+def test_stopping_the_bot_forgets_it_and_tells_the_daemon(data_dir, monkeypatch, capsys):
+    asked = daemon(monkeypatch, running_bot())
+    cli.main(["telegram-bot", "stop"])
+    assert capsys.readouterr().out == "The Telegram bot isn't configured\n" and asked == []
+    cli.main(["telegram-bot", "start", TOKEN, "42"])
+    asked.clear()
+    cli.main(["telegram-bot", "stop"])
+    assert capsys.readouterr().out.endswith("Stopped the Telegram bot\n") and bot_config(data_dir) is None
+    assert asked == [("reload", {"feature": "telegram-bot"})]
+
+
+def test_stopping_the_bot_without_a_daemon_just_forgets_it(data_dir, monkeypatch, capsys):
+    store = Store()
+    telegram.configure(store, TOKEN, 42, "09:00")
+    store.close()
+    cli.main(["telegram-bot", "stop"])
+    assert capsys.readouterr().out == "Stopped the Telegram bot\n" and bot_config(data_dir) is None
+
+
+def test_stopping_the_bot_on_an_older_daemon_says_so(data_dir, monkeypatch):
+    daemon(monkeypatch, reload=SyncError("Connection lost"))
+    store = Store()
+    telegram.configure(store, TOKEN, 42, "09:00")
+    store.close()
+    with pytest.raises(SystemExit, match="Removed its config, but: The kanso daemon runs an older kanso"):
+        cli.main(["telegram-bot", "stop"])
+
+
+@pytest.mark.parametrize("bot", [running_bot(), running_bot("can't reach Telegram, retrying", False)])
+def test_status_tells_how_the_bot_runs(data_dir, monkeypatch, capsys, bot):
+    daemon(monkeypatch, bot)
+    cli.main(["status"])
+    assert capsys.readouterr().out.splitlines()[-1] == f"Telegram bot: {bot['note']}"
+
+
+def test_status_tells_a_configured_bot_is_off_without_the_daemon(data_dir, capsys):
+    store = Store()
+    telegram.configure(store, TOKEN, 42, "09:00")
+    store.close()
+    cli.main(["status"])
+    assert capsys.readouterr().out.splitlines()[-1] == "Telegram bot: configured, but off while the daemon isn't running"
+
+
+def test_the_daemon_runs_the_bot_feature(data_dir, monkeypatch):
+    ran = []
+
+    async def run(self, features):
+        ran.append(features)
+
+    monkeypatch.setattr(Node, "run", run)
+    cli.main(["start", "--foreground"])
+    assert ran == [[control.serve, telegram.serve]]
+
+
 # Help
 
 
@@ -234,11 +388,23 @@ def test_help_lists_every_command(data_dir, capsys, argv):
     assert not data_dir.exists()  # help opens no store
 
 
-@pytest.mark.parametrize("name", ["start", "stop", "status", "connect", "help"])
+@pytest.mark.parametrize("name", ["start", "stop", "status", "connect", "telegram-bot", "help"])
 def test_each_command_explains_itself(data_dir, capsys, name):
     forms = [help_text(capsys, argv) for argv in ([name, "help"], ["help", name], [name, "--help"])]
     assert forms[0] == forms[1] == forms[2]
     assert forms[0].startswith(f"usage: kanso {name}")
+    assert not data_dir.exists()
+
+
+def test_the_bot_command_alone_explains_itself(data_dir, capsys):
+    assert help_text(capsys, ["telegram-bot"]) == help_text(capsys, ["telegram-bot", "help"])
+    assert not data_dir.exists()
+
+
+@pytest.mark.parametrize("name", ["start", "stop"])
+def test_each_bot_command_explains_itself(data_dir, capsys, name):
+    forms = [help_text(capsys, ["telegram-bot", name, *end]) for end in (["help"], ["--help"])]
+    assert forms[0] == forms[1] and forms[0].startswith(f"usage: kanso telegram-bot {name}")
     assert not data_dir.exists()
 
 
@@ -253,12 +419,18 @@ def test_help_for_an_unknown_command_fails(data_dir, capsys):
 
 
 def test_every_command_and_flag_has_help():
-    """Keeps the help complete as commands and flags are added."""
-    commands = subcommands(cli.parser())
-    listed = {choice.dest: choice.help for choice in commands._choices_actions}
-    for name, parser in commands.choices.items():
-        assert listed.get(name), f"`kanso {name}` needs a one-line help"
-        assert parser.description, f"`kanso {name}` needs a description"
-        for action in parser._actions:
-            if not isinstance(action, argparse._HelpAction):
-                assert action.help, f"`kanso {name}`'s {action.dest} needs a help"
+    """Keeps the help complete as commands and flags are added, also commands of commands."""
+
+    def check(parser, prefix):
+        commands = subcommands(parser)
+        listed = {choice.dest: choice.help for choice in commands._choices_actions}
+        for name, sub in commands.choices.items():
+            assert listed.get(name), f"`{prefix} {name}` needs a one-line help"
+            assert sub.description, f"`{prefix} {name}` needs a description"
+            for action in sub._actions:
+                if not isinstance(action, argparse._HelpAction):
+                    assert action.help, f"`{prefix} {name}`'s {action.dest} needs a help"
+                if isinstance(action, argparse._SubParsersAction):
+                    check(sub, f"{prefix} {name}")
+
+    check(cli.parser(), "kanso")

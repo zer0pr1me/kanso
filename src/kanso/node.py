@@ -10,6 +10,7 @@ view and its store, and hear about changes made elsewhere via `subscribe`.
 import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import date, datetime
+from typing import Protocol
 
 from kanso.core.store import Store
 from kanso.sync import node as sync_node
@@ -21,6 +22,16 @@ type Interface = Callable[["Node"], Awaitable[object]]
 
 DAY_CHECK = 60
 """Seconds between checks whether the date changed."""
+
+
+class Feature(Protocol):
+    """A feature running in the daemon, registered in `Node.features` by name."""
+
+    def status(self) -> dict | None:
+        """`{"title", "running", "note"}` for interfaces to show; `None` if it isn't configured."""
+
+    def reload(self):
+        """Re-read its config, as it changed."""
 
 
 class NodeView:
@@ -38,6 +49,8 @@ class NodeView:
     """Whether another device runs a newer kanso, so this one can't take its changes."""
     behind: list[str] = []
     """The names of the devices running an older kanso, which can't take this one's changes."""
+    feature_status: dict[str, dict] = {}
+    """The status of each configured daemon feature, by name; see `Feature.status`."""
 
     def __init__(self, store: Store):
         self.store = store
@@ -83,6 +96,8 @@ class Node(NodeView):
         self.lock = None
         self.tasks: list[asyncio.Task] = []
         """The sync and day tasks: the sync one ends once its transport closes, the day one is cancelled."""
+        self.features: dict[str, Feature] = {}
+        """The daemon features running on this node, which register themselves here."""
 
     @property
     def key(self) -> str:
@@ -103,6 +118,10 @@ class Node(NodeView):
     @property
     def behind(self) -> list[str]:
         return self.sync.behind if self.sync else []
+
+    @property
+    def feature_status(self) -> dict[str, dict]:
+        return {name: status for name, feature in self.features.items() if (status := feature.status())}
 
     def check_day(self):
         """Once the date changes, spawn the new day's todos and habit days."""

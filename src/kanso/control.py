@@ -4,7 +4,7 @@ The daemon is the data dir's node, running in the background with the features e
 there. It listens on localhost, writing its port, with a secret token clients must send, to
 `daemon.json` in the data dir, readable only by this user. Each connection carries one JSON
 request (framed like sync's): `watch` streams the node's status, sent again after every
-update; `status`, `pair` and `stop` answer once.
+update; `status`, `pair`, `reload` (a feature, after its config changed) and `stop` answer once.
 
 Other processes, such as the TUI's, share the data through the database and see the node as
 a `NodeClient`. `link` starts the daemon if none runs.
@@ -48,6 +48,7 @@ def status(node: Node, changed: bool = False) -> dict:
         "synced_at": synced_at,
         "outdated": node.outdated,
         "behind": node.behind,
+        "features": node.feature_status,
         "changed": changed,
     }
 
@@ -79,6 +80,12 @@ async def serve(node: Node) -> str | None:
                         await channel.send({"peer": await node.pair(str(request.get("key")), str(request.get("code")))})
                     except SyncError as error:
                         await channel.send({"error": str(error)})
+                case "reload":
+                    if feature := node.features.get(str(request.get("feature"))):
+                        feature.reload()
+                        await channel.send({})
+                    else:
+                        await channel.send({"error": f"The kanso daemon has no feature {request.get('feature')!r}"})
                 case "stop":
                     await channel.send({})
                     stop.set()
@@ -204,13 +211,14 @@ class NodeClient(NodeView):
     def update(self, message: dict):
         self.key, self.online, self.sync_note = message["key"], message["online"], None
         self.outdated, self.behind = message.get("outdated", False), message.get("behind", [])  # older daemons lack them
+        self.feature_status = message.get("features", {})
         self.synced_at = message["synced_at"] and datetime.fromisoformat(message["synced_at"])
         self.notify(message["changed"])
 
     def stopped(self):
         self.key = device_key(self.store)
         self.sync_note, self.online = "The kanso daemon isn't running: sync is off", 0
-        self.outdated, self.behind = False, []
+        self.outdated, self.behind, self.feature_status = False, [], {}
         self.notify(False)
 
     async def pair(self, key: str, code: str) -> str:

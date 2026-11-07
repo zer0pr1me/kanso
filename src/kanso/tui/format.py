@@ -6,27 +6,10 @@ from datetime import date
 from textual.content import Content
 
 from kanso.core.models import HabitDay, Scheduled, Todo
+from kanso.core.order import human_date
 
 LABEL_STYLE = "bold $text-accent on $accent-muted"
 RULE_STYLE = "$text-secondary on $secondary-muted"
-
-
-def human_date(day: date, today: date | None = None) -> str:
-    """Today/Tomorrow/Yesterday; a weekday within this week (Monday to Sunday), prefixed
-    Next/Last in the adjacent weeks; else month and day, plus the year if not this one."""
-    today = today or date.today()
-    match (day - today).days:
-        case 0:
-            return "Today"
-        case 1:
-            return "Tomorrow"
-        case -1:
-            return "Yesterday"
-    weeks = (day.toordinal() - day.weekday() - today.toordinal() + today.weekday()) // 7
-    prefix = {-1: "Last ", 0: "", 1: "Next "}.get(weeks)
-    if prefix is not None:
-        return f"{prefix}{day:%A}"
-    return f"{day:%b} {day.day}" + ("" if day.year == today.year else f", {day.year}")
 
 
 def section_title(day: date | None) -> str:

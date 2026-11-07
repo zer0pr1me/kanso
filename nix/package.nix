@@ -17,6 +17,7 @@ python3Packages.buildPythonApplication {
 
   build-system = [ python3Packages.hatchling ];
   dependencies = with python3Packages; [
+    aiohttp
     (callPackage ./iroh.nix { })
     platformdirs
     sqlmodel

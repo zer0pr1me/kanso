@@ -1,6 +1,7 @@
 # kanso
 
-Personal, local-first todo app with a terminal UI, also served in the browser.
+Personal, local-first todo app with a terminal UI, also served in the browser, and a
+Telegram bot.
 
 ## Requirements
 
@@ -17,6 +18,7 @@ uv run kanso          # terminal UI, starting the daemon if it isn't running
 uv run kanso start    # just start the daemon, in the background
 uv run kanso stop     # stop it
 uv run kanso status   # whether it runs, and how many devices are online
+uv run kanso telegram-bot start TOKEN CHAT_ID   # see "Telegram bot" below
 uv run kanso help     # every command, briefly; `kanso <command> help` for one
 uv run kanso-web      # same UI in the browser on http://localhost:8080
 ```
@@ -67,6 +69,28 @@ both survive. The header, and `kanso status`, show how many devices are online.
   newer one takes the changes of an older one, but not the other way round. The
   older one asks you to update kanso, and the newer one names the devices that
   need it, in the header and in `kanso status`.
+
+## Telegram bot
+
+The daemon can run a Telegram bot that brings your day to Telegram. Every day at
+09:00 (local time) it sends the todos for the day, with older ones still open,
+from every list; tap one to tick it off, or back. It also sends yesterday's
+habits, if some aren't marked yet: tap ✓ or ✗ to mark one, again to unmark it.
+`/today` and `/habits` send them whenever you ask.
+
+1. In Telegram, make a bot with [@BotFather](https://t.me/BotFather): it gives
+   you the bot's token. Send your new bot `/start`, so it may message you.
+2. Find your chat ID, your numeric Telegram user ID: ask
+   [@userinfobot](https://t.me/userinfobot), or start the bot with any ID and
+   send it `/start`, as it tells strangers their chat's ID.
+3. Run `kanso telegram-bot start TOKEN CHAT_ID`, adding `--at 07:30` for
+   another time. It starts the daemon if needed, and tells whether the bot runs.
+
+The bot answers only that chat. Its settings stay on this device, never synced,
+so start it on one device only, ideally one that's always on: Telegram lets one
+program at a time use a bot. It runs whenever the daemon does; `kanso status`
+shows how it runs, or what's wrong. Run `kanso telegram-bot start` again to
+change its settings, and `kanso telegram-bot stop` to stop it and forget them.
 
 ## Install on NixOS
 

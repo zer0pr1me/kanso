@@ -785,6 +785,10 @@ def test_stores_see_each_others_writes(store, other, todo_list):
     assert store.lists()[0].name == "Renamed"
     other.set_meta("k", "v")
     assert store.meta("k") == "v"
+    other.set_meta("k", "changed")  # once cached here
+    assert store.meta("k") == "changed"
+    other.set_meta("k", None)
+    assert store.meta("k") is None
 
 
 def test_reading_never_blocks_another_store_writing(store, other, todo_list):

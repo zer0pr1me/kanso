@@ -169,6 +169,46 @@ def test_a_client_of_an_older_daemon_assumes_all_up_to_date(store):
     client = NodeClient(store)
     client.update({"key": "key-app", "online": 1, "synced_at": None, "changed": False})
     assert not client.outdated and client.behind == [] and client.online == 1
+    assert client.feature_status == {}
+
+
+class Feature:
+    def __init__(self, status=None):
+        self.state, self.reloads = status, 0
+
+    def status(self):
+        return self.state
+
+    def reload(self):
+        self.reloads += 1
+
+
+def test_a_client_hears_the_configured_features(store, path):
+    async def main():
+        async with serving(path, NETWORK) as daemon, NodeClient(store) as client:
+            assert client.feature_status == {}
+            bot = daemon.features["bot"] = Feature()
+            daemon.features["idle"] = Feature()  # not configured: not shown
+            bot.state = {"title": "Bot", "running": True, "note": "running"}
+            daemon.notify(False)
+            await eventually(lambda: client.feature_status == {"bot": bot.state})
+            await control.stop(store)
+            await eventually(lambda: client.sync_note is not None)
+            assert client.feature_status == {}
+
+    asyncio.run(main())
+
+
+def test_reload_reaches_the_feature(store, path):
+    async def main():
+        async with serving(path, NETWORK) as daemon:
+            bot = daemon.features["bot"] = Feature()
+            assert await control.ask(store, "reload", feature="bot") == {}
+            assert bot.reloads == 1
+            assert await control.ask(store, "reload", feature="nope") == {"error": "The kanso daemon has no feature 'nope'"}
+            assert await control.ask(store, "reload") == {"error": "The kanso daemon has no feature None"}
+
+    asyncio.run(main())
 
 
 def test_a_client_pairs_through_the_daemon(store, path, remote):
