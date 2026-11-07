@@ -13,7 +13,7 @@ from kanso.control import NodeClient
 from kanso.core.store import Store
 from kanso.node import Node
 from kanso.sync.node import SyncNode, device_key, owner_lock
-from kanso.sync.protocol import new_code
+from kanso.sync.protocol import Result, new_code, version
 from kanso.sync.transport import Channel, MemoryTransport, StreamPipe, SyncError
 
 
@@ -146,6 +146,29 @@ def test_a_client_follows_the_daemons_status(store, path):
             await eventually(lambda: True in seen)
 
     asyncio.run(main())
+
+
+def test_a_client_hears_which_devices_need_an_update(store, path):
+    async def main():
+        async with serving(path, NETWORK) as daemon, NodeClient(store) as client:
+            assert not client.outdated and client.behind == []
+            store.add_device("key-b", "b")
+            p, s = version()
+            daemon.sync.report("key-b", Result("b", version=(p, s - 1)))
+            await eventually(lambda: client.behind == ["b"])
+            daemon.sync.report("key-b", Result("b", version=(p, s + 1)))
+            await eventually(lambda: client.outdated and client.behind == [])
+            await control.stop(store)
+            await eventually(lambda: client.sync_note is not None)
+            assert not client.outdated and client.behind == []
+
+    asyncio.run(main())
+
+
+def test_a_client_of_an_older_daemon_assumes_all_up_to_date(store):
+    client = NodeClient(store)
+    client.update({"key": "key-app", "online": 1, "synced_at": None, "changed": False})
+    assert not client.outdated and client.behind == [] and client.online == 1
 
 
 def test_a_client_pairs_through_the_daemon(store, path, remote):

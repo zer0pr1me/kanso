@@ -182,6 +182,19 @@ def test_status_of_a_running_daemon_counts_the_devices_online(store, path, remot
     with_daemon(path, remote, capsys, check)
 
 
+def test_status_tells_what_needs_an_update(data_dir, monkeypatch, capsys):
+    async def ask(store, op):
+        return {"key": "key-app", "online": 2, "synced_at": None, "outdated": True, "behind": ["b", "c"], "changed": False}
+
+    monkeypatch.setattr(control, "ask", ask)
+    cli.main(["status"])
+    assert capsys.readouterr().out.splitlines()[-3:] == [
+        "Last synced: not yet",
+        "Update kanso: a device runs a newer one, whose changes this one can't take",
+        "b, c need a kanso update to get the changes",
+    ]
+
+
 def test_status_without_a_daemon(data_dir, capsys):
     cli.main(["status"])
     store = Store()

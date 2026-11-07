@@ -27,6 +27,8 @@ class KansoApp(App):
         super().__init__()
         self.node, self.store = node, node.store
         self.unsubscribe = lambda: None
+        self.told: set[str] = set()
+        """The update notes shown already, so each shows once while it holds."""
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -59,6 +61,13 @@ class KansoApp(App):
         if node.sync_note is None:
             synced = f" · synced {node.synced_at:%H:%M}" if node.synced_at else ""
             self.sub_title = f"{node.online} device{'' if node.online == 1 else 's'} online{synced}"
+            if node.outdated:
+                self.sub_title += " · update kanso"
+            elif node.behind:
+                self.sub_title += f" · {len(node.behind)} need{'s' if len(node.behind) == 1 else ''} an update"
+        for note in set(node.update_notes()) - self.told:
+            self.notify(note, severity="warning", timeout=10)
+        self.told = set(node.update_notes())
         if changed:
             lists = self.query_one(ListsPane)
             lists.show(lists.current)

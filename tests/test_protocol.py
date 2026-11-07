@@ -212,7 +212,48 @@ def test_peer_with_newer_schema_takes_our_rows_but_we_skip_its(pair):
     a, _ = pair
     newer = {"todolist": [{"id": "z", "future_field": 1}]}
     result = serve_script(a, {**WELCOME, "schema": current_version() + 1}, rows_message(schema=current_version() + 1, rows=newer), None)
-    assert result == Result("x", 0, peer_newer=True)
+    assert result == Result("x", 0, (protocol.PROTOCOL, current_version() + 1))
+    assert result.newer and not result.older
+
+
+# Versions
+
+
+def test_peers_of_this_version_are_neither_newer_nor_older(pair):
+    a, b = pair
+    dialed, served = connect(a, b, new_code(b.store))
+    assert dialed.version == served.version == protocol.version() == (protocol.PROTOCOL, current_version())
+    assert not (dialed.newer or dialed.older or served.newer or served.older)
+
+
+def test_a_peer_not_sending_its_protocol_speaks_the_first(pair, monkeypatch):
+    a, _ = pair
+    assert serve_script(a, WELCOME, rows_message(), None) == Result("x", 0, (1, current_version()))
+    monkeypatch.setattr(protocol, "PROTOCOL", 2)
+    result = serve_script(a, WELCOME, None)  # ends after the welcome
+    assert result == Result("x", 0, (1, current_version())) and result.older
+
+
+def test_an_acceptor_of_a_newer_protocol_ends_the_session_after_welcome(pair):
+    a, _ = pair
+    before = a.store.digest()
+    result = serve_script(a, {**WELCOME, "protocol": protocol.PROTOCOL + 1}, rows_message(rows={"todolist": [{"id": "z"}]}))
+    assert result == Result("x", 0, (protocol.PROTOCOL + 1, current_version())) and result.newer
+    assert a.store.digest() == before
+
+
+def test_a_dialer_of_a_newer_protocol_is_welcomed_then_the_session_ends(pair):
+    _, b = pair
+    b.store.add_device("key-x", "x")
+    welcomed = []
+
+    async def newer(channel: Channel):
+        await channel.send({"type": "hello", "protocol": protocol.PROTOCOL + 1, "schema": current_version(), "name": "x"})
+        welcomed.append(await channel.receive())
+
+    [served] = asyncio.run(scripted(b, newer))
+    assert welcomed == [{"type": "welcome", "protocol": protocol.PROTOCOL, "schema": current_version(), "name": "b"}]
+    assert served == Result("x", 0, (protocol.PROTOCOL + 1, current_version())) and served.newer
 
 
 @pytest.mark.parametrize(
@@ -220,6 +261,7 @@ def test_peer_with_newer_schema_takes_our_rows_but_we_skip_its(pair):
     [
         ([{"type": "hello"}], "broke the protocol: expected welcome"),
         ([{**WELCOME, "schema": "1"}], "broke the protocol"),
+        ([{**WELCOME, "protocol": "2"}], "broke the protocol: protocol 2"),
         ([None], "closed"),
         ([WELCOME, rows_message(rows={"meta": []})], "bad data"),
         ([WELCOME, rows_message(rows={"todolist": [{"id": "z"}]})], "bad data"),

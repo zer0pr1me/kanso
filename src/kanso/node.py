@@ -34,10 +34,21 @@ class NodeView:
     online = 0
     """How many other devices the node reached in its last round."""
     synced_at: datetime | None = None
+    outdated = False
+    """Whether another device runs a newer kanso, so this one can't take its changes."""
+    behind: list[str] = []
+    """The names of the devices running an older kanso, which can't take this one's changes."""
 
     def __init__(self, store: Store):
         self.store = store
         self.listeners: list[Listener] = []
+
+    def update_notes(self) -> list[str]:
+        """What needs a kanso update, for interfaces to tell the user."""
+        notes = ["Update kanso: a device runs a newer one, whose changes this one can't take"] if self.outdated else []
+        if behind := self.behind:
+            notes.append(f"{', '.join(behind)} {'needs' if len(behind) == 1 else 'need'} a kanso update to get the changes")
+        return notes
 
     def subscribe(self, listener: Listener) -> Callable[[], None]:
         """Call `listener(changed)` after sync updates and day changes, `changed` if data
@@ -84,6 +95,14 @@ class Node(NodeView):
     @property
     def synced_at(self) -> datetime | None:
         return self.sync and self.sync.synced_at
+
+    @property
+    def outdated(self) -> bool:
+        return bool(self.sync and self.sync.outdated)
+
+    @property
+    def behind(self) -> list[str]:
+        return self.sync.behind if self.sync else []
 
     def check_day(self):
         """Once the date changes, spawn the new day's todos and habit days."""

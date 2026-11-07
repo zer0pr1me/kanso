@@ -6,7 +6,6 @@ Its daemon runs in the background, storing your data and syncing it. With no com
 import argparse
 import asyncio
 import sys
-from datetime import datetime
 
 from kanso import control
 from kanso.core.store import Store
@@ -57,17 +56,18 @@ async def connect(store: Store, args) -> str | None:
         return str(error)
 
 async def status(store: Store, args) -> str | None:
+    node = control.NodeClient(store)
     try:
-        node = await control.ask(store, "status")
+        node.update(await control.ask(store, "status"))
     except SyncError:
-        node = None
-    key = node["key"] if node else sync_node.device_key(store)
-    paired = sum(device.key != key for device in store.devices())
-    print(f"Daemon: {'running, syncing' if node else 'not running, so sync is off'}")
-    print(f"This device: {key}")
-    print(f"Devices online: {node['online'] if node else 0} of {paired} paired")
-    synced_at = node and node["synced_at"] and datetime.fromisoformat(node["synced_at"])
-    print(f"Last synced: {f'{synced_at:%Y-%m-%d %H:%M}' if synced_at else 'not yet'}")
+        node.stopped()
+    paired = sum(device.key != node.key for device in store.devices())
+    print(f"Daemon: {'running, syncing' if node.sync_note is None else 'not running, so sync is off'}")
+    print(f"This device: {node.key}")
+    print(f"Devices online: {node.online} of {paired} paired")
+    print(f"Last synced: {f'{node.synced_at:%Y-%m-%d %H:%M}' if node.synced_at else 'not yet'}")
+    for note in node.update_notes():
+        print(note)
 
 
 def parser() -> argparse.ArgumentParser:
@@ -105,7 +105,8 @@ def parser() -> argparse.ArgumentParser:
         status,
         "show whether the daemon runs, and how many devices are online",
         "Show whether the daemon runs, this device's ID, how many of the paired devices it\n"
-        "reached in its last round, and when it last synced.",
+        "reached in its last round, and when it last synced; and if this device or another one\n"
+        "runs an older kanso than the rest, which needs an update to sync fully.",
     )
     pair = command(
         "connect",

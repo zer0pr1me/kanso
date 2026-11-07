@@ -12,7 +12,7 @@ from kanso.core.store import NAME_MAX, Store
 from kanso.node import Node
 from kanso.sync import node as node_module
 from kanso.sync.node import SyncNode, device_key, owner_lock
-from kanso.sync.protocol import new_code
+from kanso.sync.protocol import Result, new_code, version
 from kanso.sync.transport import MemoryTransport
 from kanso.tui.app import KansoApp
 from kanso.tui import dialogs
@@ -254,6 +254,31 @@ def test_habit_day_titles_float_too(store):
         assert top_line(app, "days") == prompts(app, "days")[pane.floating()]
 
     run(tui(store), check)
+
+
+# Versions
+
+
+def test_the_header_and_a_toast_tell_what_needs_an_update(store):
+    store.add_device("key-b", "phone")
+    p, s = version()
+
+    async def check(app, pilot):
+        sync = app.node.sync
+        sync.report("key-b", Result("phone", version=(p, s - 1)))
+        assert app.sub_title.endswith(" · 1 needs an update")
+        sync.report("key-b", Result("phone", version=(p, s - 1)))  # still behind: no second toast
+        await pilot.pause()
+        assert notifications(app) == ["phone needs a kanso update to get the changes"]
+        sync.report("key-b", Result("phone", version=(p, s + 1)))
+        assert app.sub_title.endswith(" · update kanso")
+        await pilot.pause()
+        assert notifications(app)[-1].startswith("Update kanso: a device runs a newer one")
+        sync.report("key-b", Result("phone"))
+        await pilot.pause()
+        assert "update" not in app.sub_title and len(notifications(app)) == 2
+
+    run(tui(store, sync_over({})), check)
 
 
 # Keys act only where they apply

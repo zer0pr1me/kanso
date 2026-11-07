@@ -63,8 +63,10 @@ both survive. The header, and `kanso status`, show how many devices are online.
 - Don't copy the data directory to another machine, or keep it in a synced
   folder: the copy would be the same device as far as sync is concerned. Pair
   the machines instead.
-- A device running an older kanso can't take changes from a newer one until it's
-  updated; the newer one still takes its changes.
+- Devices running different versions of kanso still sync as far as they can: a
+  newer one takes the changes of an older one, but not the other way round. The
+  older one asks you to update kanso, and the newer one names the devices that
+  need it, in the header and in `kanso status`.
 
 ## Install on NixOS
 

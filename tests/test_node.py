@@ -5,9 +5,9 @@ import pytest
 
 from conftest import eventually, sync_over
 from kanso import node as node_module
-from kanso.node import Node
+from kanso.node import Node, NodeView
 from kanso.sync.node import device_key, owner_lock
-from kanso.sync.protocol import new_code
+from kanso.sync.protocol import Result, new_code, version
 from kanso.sync.transport import SyncError
 
 TOMORROW = date.today() + timedelta(days=1)
@@ -158,3 +158,38 @@ def test_pairing_returns_the_peers_name_or_raises(store, tmp_path):
 
     asyncio.run(main())
     other.close()
+
+
+# Versions
+
+OUTDATED = "Update kanso: a device runs a newer one, whose changes this one can't take"
+
+
+@pytest.mark.parametrize(
+    "outdated, behind, notes",
+    [
+        (False, [], []),
+        (True, [], [OUTDATED]),
+        (False, ["b"], ["b needs a kanso update to get the changes"]),
+        (True, ["b", "c"], [OUTDATED, "b, c need a kanso update to get the changes"]),
+    ],
+)
+def test_update_notes_tell_what_needs_an_update(store, outdated, behind, notes):
+    view = NodeView(store)
+    view.outdated, view.behind = outdated, behind
+    assert view.update_notes() == notes
+
+
+def test_a_node_reports_its_syncs_versions(store):
+    async def main():
+        async with Node(store, sync_over({})) as node:
+            assert not node.outdated and node.behind == []
+            store.add_device("key-b", "b")
+            p, s = version()
+            node.sync.report("key-b", Result("b", version=(p, s + 1)))
+            assert node.outdated and node.behind == []
+            node.sync.report("key-b", Result("b", version=(p, s - 1)))
+            assert not node.outdated and node.behind == ["b"]
+        assert not Node(store).outdated and Node(store).behind == []  # without sync
+
+    asyncio.run(main())

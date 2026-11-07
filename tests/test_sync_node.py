@@ -7,7 +7,7 @@ from kanso.core.store import Store
 from kanso.sync import node as node_module
 from kanso.sync import protocol
 from kanso.sync.node import SyncNode, owner_lock, start
-from kanso.sync.protocol import new_code
+from kanso.sync.protocol import Result, new_code
 from kanso.sync.transport import MemoryTransport, SyncError
 
 
@@ -169,10 +169,32 @@ def test_rounds_repeat_without_changes(make, monkeypatch):
     asyncio.run(main())
 
 
-def test_a_peer_running_newer_kanso_is_reported(make):
+def test_devices_on_other_versions_are_reported(make):
     a = make("a")
-    a.report(protocol.Result("b", 0, peer_newer=True))
-    assert "newer kanso" in a.error
+    for name in "bcd":
+        a.store.add_device(f"key-{name}", name)
+    p, s = protocol.version()
+    a.report("key-b", Result("b", version=(p, s + 1)))
+    a.report("key-c", Result("c", version=(p, s - 1)))
+    a.report("key-d", Result("d", version=(p - 1, s + 1)))  # the protocol counts first
+    a.report("key-e", Result("e", version=(p, s - 1)))  # not a device of the network
+    assert a.outdated and a.behind == ["c", "d"] and a.updates == [False] * 4
+    a.report("key-b", Result("b"))  # updated
+    assert not a.outdated and a.behind == ["c", "d"]
+
+
+def test_sessions_record_the_peers_version(make):
+    a, b = make("a"), make("b")
+
+    async def main():
+        await running(a, b)
+        await a.pair(b.transport.key, new_code(b.store))
+        await eventually(lambda: "key-a" in b.peers)  # b reports once its side of the session ends
+        assert a.peers["key-b"].version == b.peers["key-a"].version == protocol.version()
+        assert not (a.outdated or a.behind or b.outdated or b.behind)
+        await stop(a, b)
+
+    asyncio.run(main())
 
 
 # Owner lock

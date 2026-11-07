@@ -32,6 +32,8 @@ class SyncNode:
         self.synced_at: datetime | None = None
         self.error: str | None = None
         """Why the last session failed, if it did."""
+        self.peers: dict[str, Result] = {}
+        """The last session's result with each device, by key: its name and version."""
         self.synced_change: str | None = None
         self.wake = asyncio.Event()
         self.sessions: set[asyncio.Task] = set()
@@ -62,7 +64,7 @@ class SyncNode:
         try:
             result = await protocol.answer(self.store, channel, key, self.transport.key, self.name)
             self.online.add(key)
-            self.report(result)
+            self.report(key, result)
         except SyncError as error:
             self.error = str(error)
 
@@ -95,13 +97,25 @@ class SyncNode:
         except SyncError as error:
             self.error = str(error)
             raise
-        self.report(result)
+        self.report(key, result)
         return result
 
-    def report(self, result: Result):
-        self.error = "A device runs a newer kanso: update to get its changes" if result.peer_newer else None
-        if result.changed:
-            self.on_update(True)
+    def report(self, key: str, result: Result):
+        self.error, self.peers[key] = None, result
+        self.on_update(result.changed > 0)
+
+    @property
+    def outdated(self) -> bool:
+        """Whether a device runs a newer kanso, so this one can't take its changes."""
+        return any(result.newer for result in self.trusted_peers())
+
+    @property
+    def behind(self) -> list[str]:
+        """The names of the devices running an older kanso, which can't take this one's changes."""
+        return sorted(result.peer for result in self.trusted_peers() if result.older)
+
+    def trusted_peers(self) -> list[Result]:
+        return [result for key, result in self.peers.items() if self.store.is_trusted(key)]
 
     async def pair(self, key: str, code: str) -> Result:
         """Join the network of node `key` with its pairing code; then sync with all its devices."""

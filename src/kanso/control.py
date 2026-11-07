@@ -42,7 +42,14 @@ def log_file(store: Store) -> Path:
 
 def status(node: Node, changed: bool = False) -> dict:
     synced_at = node.synced_at and node.synced_at.isoformat()
-    return {"key": node.key, "online": node.online, "synced_at": synced_at, "changed": changed}
+    return {
+        "key": node.key,
+        "online": node.online,
+        "synced_at": synced_at,
+        "outdated": node.outdated,
+        "behind": node.behind,
+        "changed": changed,
+    }
 
 
 # The daemon
@@ -196,12 +203,14 @@ class NodeClient(NodeView):
 
     def update(self, message: dict):
         self.key, self.online, self.sync_note = message["key"], message["online"], None
+        self.outdated, self.behind = message.get("outdated", False), message.get("behind", [])  # older daemons lack them
         self.synced_at = message["synced_at"] and datetime.fromisoformat(message["synced_at"])
         self.notify(message["changed"])
 
     def stopped(self):
         self.key = device_key(self.store)
         self.sync_note, self.online = "The kanso daemon isn't running: sync is off", 0
+        self.outdated, self.behind = False, []
         self.notify(False)
 
     async def pair(self, key: str, code: str) -> str:
