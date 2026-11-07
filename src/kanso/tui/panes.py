@@ -19,7 +19,7 @@ from kanso.core.order import done_before, sections
 from kanso.core.store import NAME_MAX, NotFound, Store
 from kanso.tui.dialogs import ConfirmDialog, RepeatDialog, TextPrompt
 from kanso.tui.format import habit_day_label, human_date, section_title, template_label, todo_label
-from kanso.tui.widgets import LabelSuggester, VimOptionList, with_layouts
+from kanso.tui.widgets import LabelSuggester, SectionedOptionList, SectionTitle, VimOptionList, with_layouts
 
 
 def successor[T: Record](records: list[T], record: T) -> T | None:
@@ -187,7 +187,7 @@ SHOW_OLD_DONE = "show_old_done"
 """Setting of this replica: if set, todos done before today are shown too."""
 
 
-class TodosPane(ListContentsPane[Todo]):
+class TodosPane(ListContentsPane[Todo], SectionedOptionList):
     """Todos under a title per scheduled date; titles are disabled, so the cursor skips them.
     Todos done before today are hidden unless `f` shows them; `records` keeps them all."""
 
@@ -217,7 +217,7 @@ class TodosPane(ListContentsPane[Todo]):
     def make_options(self) -> Iterator[Option]:
         visible = self.visible()
         for day, todos in sections(visible):
-            yield Option(Content(section_title(day)), disabled=True)
+            yield SectionTitle(section_title(day))
             yield from (Option(todo_label(t), str(t.id)) for t in todos)
         if hidden := len(self.records) - len(visible):
             note = f"{count(hidden, 'todo')} done before today hidden · f shows"
@@ -386,7 +386,7 @@ SHOW_OLD_DAYS = "show_old_habit_days"
 RECENT_DAYS = 7
 
 
-class HabitDaysPane(ListContentsPane[HabitDay]):
+class HabitDaysPane(ListContentsPane[HabitDay], SectionedOptionList):
     """Habit days under a title per date, newest first; only the last week's unless `f` shows
     older ones. A day is marked once it's over: `space` a success, `x` a failure, again clears."""
 
@@ -412,7 +412,7 @@ class HabitDaysPane(ListContentsPane[HabitDay]):
     def make_options(self) -> Iterator[Option]:
         visible = self.visible()
         for day, days in groupby(visible, lambda d: d.day):
-            yield Option(Content(section_title(day)), disabled=True)
+            yield SectionTitle(section_title(day))
             yield from (Option(habit_day_label(d), str(d.id)) for d in days)
         if hidden := len(self.records) - len(visible):
             note = f"{count(hidden, 'older day')} hidden · f shows"

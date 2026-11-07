@@ -191,6 +191,71 @@ def test_cursor_skips_date_titles(store, dated):
     run(tui(store), check)
 
 
+def top_line(app, pane: str = "todos") -> str:
+    return app.query_one(f"#{pane}", OptionList).render_line(0).text.strip()
+
+
+def test_a_scrolled_off_date_title_floats_over_its_todos(store):
+    todo_list = store.add_list("Inbox")
+    for n in range(12):
+        store.add_todo(todo_list.id, f"t{n}")
+        store.add_todo(todo_list.id, f"x{n}", scheduled_at=TOMORROW)
+
+    async def check(app, pilot):
+        pane = app.query_one("#todos", OptionList)
+        await pilot.press("l")
+        assert top_line(app) == "Today" and pane.floating() is None
+        await pilot.press(*"j" * 11)
+        assert highlighted(app) == label("t11") and pane.scroll_offset.y > 0
+        assert top_line(app) == "Today" and pane.floating() == 0
+        pane.scroll_to(y=12, animate=False, immediate=True)  # Tomorrow's title right under t11
+        await pilot.pause()
+        assert top_line(app) == label("t11") and pane.floating() is None
+        await pilot.press("G")
+        assert top_line(app) == "Tomorrow" and prompts(app, "todos")[pane.floating()] == "Tomorrow"
+        for _ in range(11):  # up to x0, never under the floating title
+            await pilot.press("k")
+            assert pane.floating() is None or pane._index_to_line[pane.highlighted] > pane.scroll_offset.y
+            assert top_line(app) == "Tomorrow"
+        assert highlighted(app) == label("x0") and pane.floating() is None  # the title itself at the top
+        await pilot.press("g")
+        assert top_line(app) == "Today" and pane.floating() is None
+
+    run(tui(store), check)
+
+
+def test_a_days_only_todo_scrolled_to_the_top_shows_its_title(store):
+    todo_list = store.add_list("Inbox")
+    for n in range(12):
+        store.add_todo(todo_list.id, f"x{n}", scheduled_at=TOMORROW)
+    store.add_todo(todo_list.id, "only", scheduled_at=TODAY)
+
+    async def check(app, pilot):
+        pane = app.query_one("#todos", OptionList)
+        await pilot.press("l", "G")
+        pane.scroll_end(animate=False, immediate=True)
+        await pilot.pause()
+        await pilot.press(*"k" * 12)  # up to "only", today's one todo, as the list scrolls
+        assert highlighted(app) == label("only") and top_line(app) == "Today"
+
+    run(tui(store), check)
+
+
+def test_habit_day_titles_float_too(store):
+    todo_list = store.add_list("Inbox")
+    for n in range(12):
+        store.add_habit(todo_list.id, f"h{n}")
+
+    async def check(app, pilot):
+        pane = app.query_one("#days", OptionList)
+        pane.focus()
+        await pilot.press("G")
+        assert pane.scroll_offset.y > 0 and pane.floating() is not None
+        assert top_line(app, "days") == prompts(app, "days")[pane.floating()]
+
+    run(tui(store), check)
+
+
 # Keys act only where they apply
 
 
