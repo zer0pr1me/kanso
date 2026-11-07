@@ -1,5 +1,6 @@
 """The Telegram bot, a daemon feature: it sends the day's todos to its owner's chat every day,
-and asks about yesterday's habits, with buttons to tick todos off and mark habits.
+and asks about yesterday's habits, with buttons to check, postpone and delete todos and to
+mark habits; each press redraws its message in place.
 
 Its config lives in this replica's meta, never synced, so only the device it was started on
 runs it (Telegram lets one program at a time poll a bot). It answers only the configured chat;
@@ -7,6 +8,7 @@ to anyone else's /start it says which chat that is, which helps find one's chat 
 """
 
 import asyncio
+import html
 import json
 from collections.abc import Callable
 from datetime import date, datetime, time, timedelta
@@ -30,9 +32,13 @@ COMMANDS = [
     {"command": "today", "description": "Today's todos"},
     {"command": "habits", "description": "Yesterday's habits"},
 ]
-NOOP = "-"
-"""Callback data of buttons that only label."""
+NONE = "-"
+"""Stands for no record in callback data."""
+MAX_TODOS = 30
+"""Todos listed at most: Telegram allows about 100 buttons per message, three per todo."""
 TODO_MARKS = {False: "⬜", True: "✅"}
+TOGGLES = {False: "✔️", True: "↩️"}
+"""The check button of an open todo, and of a done one."""
 HABIT_MARKS = {"success": ("✓", "✅"), "failure": ("✗", "❌")}
 """Each state's button: as it reads unset, and set."""
 
@@ -57,14 +63,15 @@ def unconfigure(store: Store) -> bool:
 
 
 def heading(day: date) -> str:
-    return f"{human_date(day)} · {day:%a, %b} {day.day}"
+    """Bold, as messages are HTML."""
+    return f"<b>{human_date(day)} · {day:%a, %b} {day.day}</b>"
 
 
 def keyboard(rows: list[list[dict]]) -> dict | None:
     return {"inline_keyboard": rows} if rows else None
 
 
-def button(text: str, data: str = NOOP) -> dict:
+def button(text: str, data: str) -> dict:
     return {"text": text, "callback_data": data}
 
 
@@ -78,15 +85,30 @@ def todos_of(store: Store, day: date) -> list[tuple[str, list[Todo]]]:
     return lists
 
 
-def today_message(store: Store, day: date) -> tuple[str, dict | None]:
-    rows = []
+def today_message(store: Store, day: date, confirm: UUID | None = None) -> tuple[str, dict | None]:
+    """The day's todos, numbered, by list; each number's row of buttons checks or unchecks,
+    postpones and deletes it, or, for the todo `confirm`, asks to confirm deleting it."""
+    lines, rows, left = [heading(day)], [], 0
     for name, todos in todos_of(store, day):
-        rows.append([button(f"📋 {name}")])
+        if len(rows) == MAX_TODOS:
+            left += len(todos)
+            continue
+        lines.append(f"\n<b>📋 {html.escape(name)}</b>")
         for todo in todos:
-            late = f" · {human_date(todo.scheduled_at, day)}" if todo.scheduled_at < day else ""
-            data = f"t {todo.id} {day:%Y%m%d} {int(not todo.done)}"
-            rows.append([button(f"{TODO_MARKS[todo.done]} {todo.title}{late}", data)])
-    return (heading(day) if rows else f"{heading(day)}\nNothing to do"), keyboard(rows)
+            if len(rows) == MAX_TODOS:
+                left += 1
+                continue
+            n, tail = len(rows) + 1, f"{todo.id} {day:%Y%m%d}"
+            title = html.escape(todo.title)
+            late = f" <i>· {human_date(todo.scheduled_at, day)}</i>" if todo.scheduled_at < day else ""
+            lines.append(f"{n}. {TODO_MARKS[todo.done]} {f'<s>{title}</s>' if todo.done else title}{late}")
+            if todo.id == confirm:
+                rows.append([button(f"🗑 Delete {n}?", f"D {tail}"), button("Keep", f"n {NONE} {day:%Y%m%d}")])
+            else:
+                rows.append([button(f"{n} {TOGGLES[todo.done]}", f"t {tail} {int(not todo.done)}"), button(f"{n} ⏭", f"p {tail}"), button(f"{n} 🗑", f"d {tail}")])
+    if left:
+        lines.append(f"\n…and {left} more in kanso")
+    return ("\n".join(lines) if rows else f"{heading(day)}\nNothing to do"), keyboard(rows)
 
 
 def habit_days_of(store: Store, day: date) -> list[HabitDay]:
@@ -102,14 +124,24 @@ def habits_message(store: Store, day: date) -> tuple[str, dict | None]:
                 for state, marks in HABIT_MARKS.items()
             ]
         )
-    return f"Habits · {heading(day)}" + ("" if rows else "\nNo habits that day"), keyboard(rows)
+    return f"<b>Habits</b> · {heading(day)}" + ("" if rows else "\nNo habits that day"), keyboard(rows)
 
 
 HELP = (
     "I send you kanso's todos for the day at {at}, and ask how yesterday's habits went. "
-    "Tap a todo to tick it off, ✓ or ✗ to mark a habit, again to unmark it.\n\n"
+    "Under each todo's number: ✔️ checks it (↩️ unchecks it), ⏭ moves it to the next day, "
+    "🗑 deletes it. Tap ✓ or ✗ to mark a habit, again to unmark it.\n\n"
     "/today – today's todos\n/habits – yesterday's habits"
 )
+
+
+def parse(data: str) -> tuple[str, UUID | None, date, str | None]:
+    """A button's callback data: its action, record, the day its message is of, and its
+    argument; raises `ValueError` if it isn't one of ours."""
+    kind, record, day, *arg = data.split()  # unpacking too few raises ValueError
+    if len(arg) > 1:
+        raise ValueError(data)
+    return kind, None if record == NONE else UUID(record), datetime.strptime(day, "%Y%m%d").date(), (arg or [None])[0]
 
 
 class Refused(Exception):
@@ -177,7 +209,13 @@ class Bot:
     async def send(self, text: str, markup: dict | None, chat: int | None = None) -> bool:
         """Send to the owner's chat (or `chat`); whether that worked, noting why not if it didn't."""
         try:
-            await self.call("sendMessage", chat_id=self.chat if chat is None else chat, text=text, **({"reply_markup": markup} if markup else {}))
+            await self.call(
+                "sendMessage",
+                chat_id=self.chat if chat is None else chat,
+                text=text,
+                parse_mode="HTML",
+                **({"reply_markup": markup} if markup else {}),
+            )
         except BotError as error:
             if chat is None:
                 self.chat_trouble = f"can't send to chat {self.chat}: {error} (send /start to the bot first)"
@@ -220,30 +258,49 @@ class Bot:
 
     async def press(self, query_id: str, message_id: int, data: str):
         """A button pressed: act on it, and show the message afresh."""
-        answer, render, day = "", None, None
+        answer, render, confirm = "", None, None
         try:
-            match data.split():
-                case ["t", record, day, done] if done in ("0", "1"):
-                    record, day = UUID(record), datetime.strptime(day, "%Y%m%d").date()
-                    render = today_message
-                    self.store.update_todo(record, done=done == "1")
-                    self.node.notify(True)
-                case ["h", record, day, state] if state in HABIT_MARKS:
-                    record, day = UUID(record), datetime.strptime(day, "%Y%m%d").date()
-                    render = habits_message
+            kind, record, day, arg = parse(data)
+            if record is None and kind != "n":
+                raise ValueError(data)
+            render = habits_message if kind == "h" else today_message
+            match kind, arg:
+                case "t", "0" | "1":
+                    self.store.update_todo(record, done=arg == "1")
+                case "p", None:
+                    self.store.update_todo(record, scheduled_at=day + timedelta(days=1))
+                    answer = "Moved to the next day"
+                case "d", None:
+                    confirm = record
+                case "D", None:
+                    self.store.delete_todo(record)
+                    answer = "Deleted"
+                case "n", None:
+                    pass
+                case "h", state if state in HABIT_MARKS:
                     habit_day = next((d for d in habit_days_of(self.store, day) if d.id == record), None)
                     if habit_day is None:
                         raise NotFound(record)
                     self.store.mark_habit_day(habit_day.id, None if habit_day.state == state else state)
-                    self.node.notify(True)
+                case _:
+                    render = None
+            if render and kind not in ("d", "n"):
+                self.node.notify(True)
         except NotFound:
             answer = "It's gone: deleted, maybe on another device"
         except ValueError as error:  # bad button data, or marking a day not over yet
             answer = str(error) if render else ""
         if render:
-            text, markup = render(self.store, day)
+            text, markup = render(self.store, day, confirm) if confirm else render(self.store, day)
             try:
-                await self.call("editMessageText", chat_id=self.chat, message_id=message_id, text=text, reply_markup=markup or {"inline_keyboard": []})
+                await self.call(
+                    "editMessageText",
+                    chat_id=self.chat,
+                    message_id=message_id,
+                    text=text,
+                    parse_mode="HTML",
+                    reply_markup=markup or {"inline_keyboard": []},
+                )
             except BotError as error:
                 if "not modified" not in str(error):
                     raise

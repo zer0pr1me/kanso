@@ -74,9 +74,11 @@ both survive. The header, and `kanso status`, show how many devices are online.
 
 The daemon can run a Telegram bot that brings your day to Telegram. Every day at
 09:00 (local time) it sends the todos for the day, with older ones still open,
-from every list; tap one to tick it off, or back. It also sends yesterday's
-habits, if some aren't marked yet: tap ✓ or ✗ to mark one, again to unmark it.
-`/today` and `/habits` send them whenever you ask.
+numbered by list. Under the list, each number has buttons: ✔️ checks the todo
+(↩️ unchecks it), ⏭ moves it to the next day, and 🗑 deletes it, after asking.
+It also sends yesterday's habits, if some aren't marked yet: tap ✓ or ✗ to mark
+one, again to unmark it. Each tap redraws the message in place. `/today` and
+`/habits` send them whenever you ask.
 
 1. In Telegram, make a bot with [@BotFather](https://t.me/BotFather): it gives
    you the bot's token. Send your new bot `/start`, so it may message you.

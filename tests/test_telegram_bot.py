@@ -95,34 +95,50 @@ def run(coroutine):
 # Messages
 
 
-def test_today_shows_todays_and_older_open_todos_of_every_list(store, todo_list):
+def day_heading(day: date) -> str:
+    return f"<b>{telegram.human_date(day)} · {day:%a, %b} {day.day}</b>"
+
+
+def test_today_lists_todays_and_older_open_todos_of_every_list(store, todo_list):
     todo(store, todo_list, "today", TODAY)
     todo(store, todo_list, "late", TODAY - timedelta(days=3))
     todo(store, todo_list, "done late, today", TODAY - timedelta(days=3), done=True)
     todo(store, todo_list, "done before", TODAY - timedelta(days=3), done=True, completed=YESTERDAY)
     todo(store, todo_list, "tomorrow", TODAY + timedelta(days=1))
     store.add_todo(todo_list.id, "no date", scheduled_at=None)
-    work = store.add_list("Work")
-    todo(store, work, "report", TODAY)
+    work = store.add_list("Work & <play>")
+    todo(store, work, "<b>bold</b> & co", TODAY)
     store.add_list("Empty")
     text, markup = today_message(store, TODAY)
-    assert text == f"Today · {TODAY:%a, %b} {TODAY.day}"
     late = telegram.human_date(TODAY - timedelta(days=3))
-    assert buttons(markup) == [
-        ["📋 Inbox"],
-        [f"✅ done late, today · {late}"],
-        [f"⬜ late · {late}"],
-        ["⬜ today"],
-        ["📋 Work"],
-        ["⬜ report"],
+    assert text.splitlines() == [
+        day_heading(TODAY),
+        "",
+        "<b>📋 Inbox</b>",
+        f"1. ✅ <s>done late, today</s> <i>· {late}</i>",
+        f"2. ⬜ late <i>· {late}</i>",
+        "3. ⬜ today",
+        "",
+        "<b>📋 Work &amp; &lt;play&gt;</b>",
+        "4. ⬜ &lt;b&gt;bold&lt;/b&gt; &amp; co",
     ]
+    assert buttons(markup) == [["1 ↩️", "1 ⏭", "1 🗑"], *[[f"{n} ✔️", f"{n} ⏭", f"{n} 🗑"] for n in (2, 3, 4)]]
     assert all(len(b["callback_data"].encode()) <= 64 for row in markup["inline_keyboard"] for b in row)
-    assert data(markup, "📋 Inbox") == telegram.NOOP
 
 
 def test_a_day_with_nothing_to_do_says_so(store, todo_list):
     todo(store, todo_list, "tomorrow", TODAY + timedelta(days=1))
-    assert today_message(store, TODAY) == (f"Today · {TODAY:%a, %b} {TODAY.day}\nNothing to do", None)
+    assert today_message(store, TODAY) == (f"{day_heading(TODAY)}\nNothing to do", None)
+
+
+def test_a_long_day_lists_what_fits(store, todo_list, monkeypatch):
+    monkeypatch.setattr(telegram, "MAX_TODOS", 2)
+    for text in ("a", "b", "c"):
+        todo(store, todo_list, text, TODAY)
+    todo(store, store.add_list("Work"), "d", TODAY)
+    text, markup = today_message(store, TODAY)
+    assert text.splitlines()[-3:] == ["2. ⬜ b", "", "…and 2 more in kanso"]
+    assert len(markup["inline_keyboard"]) == 2
 
 
 def test_habits_show_that_days_habits_with_their_marks(store, todo_list):
@@ -131,38 +147,77 @@ def test_habits_show_that_days_habits_with_their_marks(store, todo_list):
     [yesterday] = [d for d in store.habit_days(todo_list.id) if d.day == YESTERDAY]
     store.mark_habit_day(yesterday.id, "success")
     text, markup = habits_message(store, YESTERDAY)
-    assert text == f"Habits · Yesterday · {YESTERDAY:%a, %b} {YESTERDAY.day}"
+    assert text == f"<b>Habits</b> · {day_heading(YESTERDAY)}"
     assert buttons(markup) == [["✅ Run", "✗ Run"], ["✓ Read", "✗ Read"]]
     assert data(markup, "✅ Run") == f"h {yesterday.id} {YESTERDAY:%Y%m%d} success"
     assert run_.id == yesterday.habit_id
 
 
 def test_a_day_without_habits_says_so(store, todo_list):
-    assert habits_message(store, YESTERDAY) == (f"Habits · Yesterday · {YESTERDAY:%a, %b} {YESTERDAY.day}\nNo habits that day", None)
+    assert habits_message(store, YESTERDAY) == (f"<b>Habits</b> · {day_heading(YESTERDAY)}\nNo habits that day", None)
 
 
 # Buttons
 
 
 def press(bot, api, markup, text: str, message_id: int = 5, chat: int = CHAT):
-    api.updates.put_nowait({"update_id": 1, "callback_query": {"id": "q", "data": data(markup, text), "message": {"message_id": message_id, "chat": {"id": chat}}}})
-    return bot.handle(api.updates.get_nowait())
+    query = {"id": "q", "data": data(markup, text), "message": {"message_id": message_id, "chat": {"id": chat}}}
+    return bot.handle({"update_id": 1, "callback_query": query})
 
 
-def test_tapping_a_todo_ticks_it_off_and_back(bot, api, store, todo_list):
-    item = todo(store, todo_list, "milk", TODAY)
+def edited(api) -> dict:
+    """The message as the last edit left it."""
+    return api.sent("editMessageText")[-1]
+
+
+def answers(api) -> list[str | None]:
+    return [a.get("text") for a in api.sent("answerCallbackQuery")]
+
+
+def test_checking_a_todo_redraws_its_message(bot, api, store, todo_list):
+    todo(store, todo_list, "milk", TODAY)
     changes = []
     bot.node.subscribe(changes.append)
     _, markup = today_message(store, TODAY)
-    run(press(bot, api, markup, "⬜ milk"))
+    run(press(bot, api, markup, "1 ✔️"))
     assert store.todos(todo_list.id)[0].done and changes == [True]
-    [edit] = api.sent("editMessageText")
-    assert edit["chat_id"] == CHAT and edit["message_id"] == 5 and buttons(edit["reply_markup"])[1] == ["✅ milk"]
-    assert api.sent("answerCallbackQuery") == [{"callback_query_id": "q"}]
-    run(press(bot, api, edit["reply_markup"], "✅ milk"))
+    edit = edited(api)
+    assert (edit["chat_id"], edit["message_id"], edit["parse_mode"]) == (CHAT, 5, "HTML")
+    assert (edit["text"], edit["reply_markup"]) == today_message(store, TODAY)
+    assert "<s>milk</s>" in edit["text"] and buttons(edit["reply_markup"]) == [["1 ↩️", "1 ⏭", "1 🗑"]]
+    assert answers(api) == [None]
+    run(press(bot, api, edit["reply_markup"], "1 ↩️"))
     assert not store.todos(todo_list.id)[0].done
-    run(press(bot, api, edit["reply_markup"], "✅ milk"))  # a stale button: the same again
-    assert not store.todos(todo_list.id)[0].done and item.id
+    run(press(bot, api, edit["reply_markup"], "1 ↩️"))  # a stale button: the same again
+    assert not store.todos(todo_list.id)[0].done
+
+
+def test_postponing_a_todo_moves_it_to_the_next_day(bot, api, store, todo_list):
+    item = todo(store, todo_list, "milk", TODAY - timedelta(days=3))
+    todo(store, todo_list, "bread", TODAY)
+    _, markup = today_message(store, TODAY)
+    run(press(bot, api, markup, "1 ⏭"))
+    assert store.todos(todo_list.id)[0].scheduled_at == TODAY + timedelta(days=1)
+    assert "milk" not in edited(api)["text"] and buttons(edited(api)["reply_markup"]) == [["1 ✔️", "1 ⏭", "1 🗑"]]
+    assert answers(api) == ["Moved to the next day"] and item.id
+
+
+def test_deleting_a_todo_asks_first(bot, api, store, todo_list):
+    todo(store, todo_list, "milk", TODAY)
+    todo(store, todo_list, "bread", TODAY)
+    changes = []
+    bot.node.subscribe(changes.append)
+    _, markup = today_message(store, TODAY)
+    run(press(bot, api, markup, "2 🗑"))
+    assert len(store.todos(todo_list.id)) == 2 and changes == []
+    asking = edited(api)["reply_markup"]
+    assert buttons(asking) == [["1 ✔️", "1 ⏭", "1 🗑"], ["🗑 Delete 2?", "Keep"]]
+    run(press(bot, api, asking, "Keep"))
+    assert edited(api)["reply_markup"] == markup and len(store.todos(todo_list.id)) == 2
+    run(press(bot, api, asking, "🗑 Delete 2?"))
+    assert [t.title for t in store.todos(todo_list.id)] == ["milk"] and changes == [True]
+    assert buttons(edited(api)["reply_markup"]) == [["1 ✔️", "1 ⏭", "1 🗑"]]
+    assert answers(api) == [None, None, "Deleted"]
 
 
 def test_tapping_a_habit_marks_it_and_again_unmarks_it(bot, api, store, todo_list):
@@ -170,12 +225,10 @@ def test_tapping_a_habit_marks_it_and_again_unmarks_it(bot, api, store, todo_lis
     _, markup = habits_message(store, YESTERDAY)
     run(press(bot, api, markup, "✓ Run"))
     assert [d.state for d in store.habit_days(todo_list.id) if d.day == YESTERDAY] == ["success"]
-    markup = api.sent("editMessageText")[-1]["reply_markup"]
-    assert buttons(markup) == [["✅ Run", "✗ Run"]]
-    run(press(bot, api, markup, "✗ Run"))
-    markup = api.sent("editMessageText")[-1]["reply_markup"]
-    assert buttons(markup) == [["✓ Run", "❌ Run"]]
-    run(press(bot, api, markup, "❌ Run"))
+    assert edited(api)["parse_mode"] == "HTML" and buttons(edited(api)["reply_markup"]) == [["✅ Run", "✗ Run"]]
+    run(press(bot, api, edited(api)["reply_markup"], "✗ Run"))
+    assert buttons(edited(api)["reply_markup"]) == [["✓ Run", "❌ Run"]]
+    run(press(bot, api, edited(api)["reply_markup"], "❌ Run"))
     assert [d.state for d in store.habit_days(todo_list.id) if d.day == YESTERDAY] == [None]
 
 
@@ -183,35 +236,38 @@ def test_a_record_deleted_meanwhile_is_reported_and_the_message_redrawn(bot, api
     item = todo(store, todo_list, "milk", TODAY)
     habit(store, todo_list, "Run")
     _, todos = today_message(store, TODAY)
+    _, asking = today_message(store, TODAY, item.id)
     _, habits = habits_message(store, YESTERDAY)
     store.delete_todo(item.id)
     for day in store.habit_days(todo_list.id):
         store.delete_habit_day(day.id)
-    run(press(bot, api, todos, "⬜ milk"))
-    run(press(bot, api, habits, "✓ Run"))
-    gone = {"callback_query_id": "q", "text": "It's gone: deleted, maybe on another device"}
-    assert api.sent("answerCallbackQuery") == [gone, gone]
-    assert [e["reply_markup"] for e in api.sent("editMessageText")] == [{"inline_keyboard": []}] * 2
+    for markup, label in [(todos, "1 ✔️"), (todos, "1 ⏭"), (asking, "🗑 Delete 1?"), (habits, "✓ Run")]:
+        run(press(bot, api, markup, label))
+    assert answers(api) == ["It's gone: deleted, maybe on another device"] * 4
+    assert [e["reply_markup"] for e in api.sent("editMessageText")] == [{"inline_keyboard": []}] * 4
 
 
 def test_todays_habits_cant_be_marked_yet(bot, api, store, todo_list):
     habit(store, todo_list, "Run")
     _, markup = habits_message(store, TODAY)
     run(press(bot, api, markup, "✓ Run"))
-    assert api.sent("answerCallbackQuery")[0]["text"] == "Habits can only be marked once the day is over"
+    assert answers(api) == ["Habits can only be marked once the day is over"]
 
 
 def test_an_unchanged_message_is_fine_but_other_edit_failures_raise(bot, api, store, todo_list):
     todo(store, todo_list, "milk", TODAY)
     _, markup = today_message(store, TODAY)
     api.errors["editMessageText"] = [BotError("Bad Request: message is not modified", 400), BotError("Bad Request: message to edit not found", 400)]
-    run(press(bot, api, markup, "⬜ milk"))
-    assert len(api.sent("answerCallbackQuery")) == 1
+    run(press(bot, api, markup, "1 ✔️"))
+    assert len(answers(api)) == 1
     with pytest.raises(BotError, match="not found"):
-        run(press(bot, api, markup, "⬜ milk"))
+        run(press(bot, api, markup, "1 ✔️"))
 
 
-@pytest.mark.parametrize("data", ["", "-", "t nope 20260101 1", "t 1 2 3", "h x y z", "x"])
+@pytest.mark.parametrize(
+    "data",
+    ["", "-", "x", "t nope 20260101 1", "t 1 2 3", "h x y z", "t - 20260101 1", "z 6f1c2a4e-9b0d-4f5e-8a37-2d9c1b7e4a60 20260101", "p 6f1c2a4e-9b0d-4f5e-8a37-2d9c1b7e4a60 20260101 1 2"],
+)
 def test_odd_buttons_are_just_answered(bot, api, data):
     update = {"update_id": 1, "callback_query": {"id": "q", "data": data, "message": {"message_id": 5, "chat": {"id": CHAT}}}}
     run(bot.handle(update))
@@ -221,8 +277,9 @@ def test_odd_buttons_are_just_answered(bot, api, data):
 def test_other_chats_buttons_are_ignored(bot, api, store, todo_list):
     todo(store, todo_list, "milk", TODAY)
     _, markup = today_message(store, TODAY)
-    run(press(bot, api, markup, "⬜ milk", chat=7))
-    assert api.calls == [] and not store.todos(todo_list.id)[0].done
+    for label in ("1 ✔️", "1 ⏭", "1 🗑"):
+        run(press(bot, api, markup, label, chat=7))
+    assert api.calls == [] and [(t.done, t.scheduled_at) for t in store.todos(todo_list.id)] == [(False, TODAY)]
 
 
 # Commands
@@ -238,8 +295,9 @@ def test_today_and_habits_send_their_messages(bot, api, store, todo_list):
     run(bot.handle(message("/today")))
     run(bot.handle(message("/habits@kanso_bot")))
     today, habits = api.sent()
-    assert today == {"chat_id": CHAT, "text": today_message(store, TODAY)[0], "reply_markup": today_message(store, TODAY)[1]}
-    assert habits["text"].startswith("Habits · Yesterday") and buttons(habits["reply_markup"]) == [["✓ Run", "✗ Run"]]
+    text, markup = today_message(store, TODAY)
+    assert today == {"chat_id": CHAT, "text": text, "parse_mode": "HTML", "reply_markup": markup}
+    assert habits["text"].startswith("<b>Habits</b> · <b>Yesterday") and buttons(habits["reply_markup"]) == [["✓ Run", "✗ Run"]]
 
 
 @pytest.mark.parametrize("text", ["/start", "/help", "hello", ""])
@@ -254,7 +312,7 @@ def test_strangers_learn_only_their_chat_id(bot, api):
         run(bot.handle(message(text, chat=7)))
     assert api.calls == []
     run(bot.handle(message("/start", chat=7)))
-    assert api.sent() == [{"chat_id": 7, "text": "This is a private kanso bot. This chat's ID is 7."}]
+    assert api.sent() == [{"chat_id": 7, "text": "This is a private kanso bot. This chat's ID is 7.", "parse_mode": "HTML"}]
     assert bot.status()["note"] == telegram.STARTING  # failing to reach a stranger isn't the bot's trouble
     api.errors["sendMessage"] = [BotError("Forbidden", 403)]
     run(bot.handle(message("/start", chat=7)))
@@ -301,12 +359,12 @@ def test_the_day_brings_todos_and_yesterdays_unmarked_habits(bot, api, store, to
     todo(store, todo_list, "milk", TODAY)
     habit(store, todo_list, "Run")
     run(bot.send_day(TODAY))
-    assert [s["text"].split(" · ")[0] for s in api.sent()] == ["Today", "Habits"]
+    assert [s["text"].split(" · ")[0] for s in api.sent()] == ["<b>Today", "<b>Habits</b>"]
     assert store.meta(SENT) == TODAY.isoformat()
     [yesterday] = [d for d in store.habit_days(todo_list.id) if d.day == YESTERDAY]
     store.mark_habit_day(yesterday.id, "failure")
     run(bot.send_day(TODAY))
-    assert [s["text"].split(" · ")[0] for s in api.sent()] == ["Today", "Habits", "Today"]
+    assert [s["text"].split(" · ")[0] for s in api.sent()] == ["<b>Today", "<b>Habits</b>", "<b>Today"]
 
 
 @pytest.mark.parametrize("failing", [0, 1])
