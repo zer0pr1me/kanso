@@ -12,7 +12,7 @@ import pytest
 
 from conftest import eventually, serving, sync_over
 from kanso import __main__ as cli
-from kanso import __version__
+from kanso import __version__, build
 from kanso import control
 from kanso.core.store import Store
 from kanso.node import Node
@@ -20,6 +20,7 @@ from kanso.sync import node as sync_node
 from kanso.sync.node import SyncNode, device_key, owner_lock
 from kanso.core.migrations import current_version
 from kanso.sync.protocol import PROTOCOL, new_code
+from kanso.sync.protocol import version as sync_version
 from kanso.sync.transport import MemoryTransport, SyncError
 
 
@@ -55,19 +56,28 @@ def test_kanso_opens_the_tui_on_the_linked_node(data_dir, monkeypatch):
     assert ran == [True]
 
 
+p, s = sync_version()
+
+
 @pytest.mark.parametrize(
-    "running, started, output",
-    [(True, None, "The kanso daemon already runs\n"), (False, True, "Started the kanso daemon\n")],
+    "daemon, output",
+    [
+        (None, "Started the kanso daemon\n"),
+        (control.identity(), "The kanso daemon already runs\n"),
+        ({**control.identity(), "version": "0.0.1", "build": "old"}, "Restarted the kanso daemon with this kanso: it ran kanso 0.0.1\n"),
+        ({"key": "key-app"}, "Restarted the kanso daemon with this kanso: it ran an older kanso\n"),
+        ({**control.identity(), "version": "9.0.0", "build": "new", "sync": [p, s + 1]}, "The kanso daemon already runs\n"),
+    ],
 )
-def test_start(data_dir, monkeypatch, capsys, running, started, output):
-    answers(monkeypatch, running=running, start=started)
+def test_start(data_dir, monkeypatch, capsys, daemon, output):
+    answers(monkeypatch, daemon_status=daemon, start=True)
     cli.main(["start"])
     assert capsys.readouterr().out == output
 
 
 def test_start_reports_a_daemon_that_didnt_start(data_dir, monkeypatch):
-    answers(monkeypatch, running=False, start=False)
-    with pytest.raises(SystemExit, match=f"didn't start: see {data_dir / 'daemon.log'}"):
+    answers(monkeypatch, daemon_status=None, start=False)
+    with pytest.raises(SystemExit, match=f"didn't start: see {data_dir / 'kanso.log'}"):
         cli.main(["start"])
 
 
@@ -88,8 +98,33 @@ def test_the_foreground_daemon_runs_until_sigterm(data_dir, capsys):
 
     threading.Thread(target=stop_once_up).start()
     cli.main(["start", "--foreground"])
-    assert capsys.readouterr().out == "kanso daemon syncing as key-app\n"
+    out, err = capsys.readouterr()
+    started = f"INFO daemon[{os.getpid()}] kanso.control: The daemon started: kanso {__version__} (build {build()}"
+    assert out == "" and started in err and "The daemon stops: SIGINT or SIGTERM" in err
+    assert started in (data_dir / "kanso.log").read_text()  # the log, and stderr for systemd's journal
     assert not (data_dir / "daemon.json").exists()
+
+
+@pytest.mark.parametrize("daemon", [control.identity(), {"key": "key-app"}])
+def test_the_foreground_daemon_takes_over_from_a_running_one(data_dir, monkeypatch, daemon):
+    done = []
+    answers(monkeypatch, daemon_status=daemon)
+    monkeypatch.setattr(control, "replace", lambda store: done.append("replaced") or asyncio.sleep(0))
+
+    async def run(self, features):
+        done.append("ran")
+
+    monkeypatch.setattr(Node, "run", run)
+    cli.main(["start", "--foreground"])
+    assert done == ["replaced", "ran"]
+
+
+def test_the_foreground_daemon_leaves_one_of_a_newer_sync_version(data_dir, monkeypatch, capsys):
+    newer = {**control.identity(), "version": "9.0.0", "build": "new", "sync": [p, s + 1]}
+    answers(monkeypatch, daemon_status=newer)
+    monkeypatch.setattr(Node, "run", lambda self, features: pytest.fail("ran"))
+    cli.main(["start", "--foreground"])  # exits fine: systemd shouldn't retry
+    assert capsys.readouterr().out == "The kanso daemon runs kanso 9.0.0, of a newer sync version: left it running\n"
 
 
 def test_the_foreground_daemon_refuses_when_another_runs(data_dir):
@@ -171,7 +206,7 @@ def test_connect_needs_both_id_and_code(store):
 @pytest.mark.parametrize("argv", [["connect"], ["connect", "key-b", "CODE"]])
 def test_connect_reports_a_daemon_that_didnt_start(data_dir, monkeypatch, argv):
     answers(monkeypatch, start=False)
-    with pytest.raises(SystemExit, match=f"can't connect: see {data_dir / 'daemon.log'}"):
+    with pytest.raises(SystemExit, match=f"can't connect: see {data_dir / 'kanso.log'}"):
         cli.main(argv)
 
 
@@ -180,23 +215,25 @@ def test_status_of_a_running_daemon_counts_the_devices_online(store, path, remot
         await command(store, "connect", "key-b", new_code(remote.store))
         capsys.readouterr()
         assert await command(store, "status") is None
-        daemon, own, online, synced = capsys.readouterr().out.splitlines()
+        daemon, own, online, synced, log = capsys.readouterr().out.splitlines()
         assert daemon == "Daemon: running, syncing" and own == "This device: key-app"
         assert online == "Devices online: 1 of 1 paired" and synced.startswith("Last synced: 20")
+        assert log == f"Log: {path.parent / 'kanso.log'}"
 
     with_daemon(path, remote, capsys, check)
 
 
 def test_status_tells_what_needs_an_update(data_dir, monkeypatch, capsys):
     async def ask(store, op):
-        return {"key": "key-app", "online": 2, "synced_at": None, "outdated": True, "behind": ["b", "c"], "changed": False}
+        return {"key": "key-app", "online": 2, "synced_at": None, "outdated": True, "behind": ["b", "c"], "changed": False, **control.identity()}
 
     monkeypatch.setattr(control, "ask", ask)
     cli.main(["status"])
-    assert capsys.readouterr().out.splitlines()[-3:] == [
+    assert capsys.readouterr().out.splitlines()[-4:] == [
         "Last synced: not yet",
         "Update kanso: a device runs a newer one, whose changes this one can't take",
         "b, c need a kanso update to get the changes",
+        f"Log: {data_dir / 'kanso.log'}",
     ]
 
 
@@ -210,6 +247,7 @@ def test_status_without_a_daemon(data_dir, capsys):
         f"This device: {key}\n"
         "Devices online: 0 of 0 paired\n"
         "Last synced: not yet\n"
+        f"Log: {data_dir / 'kanso.log'}\n"
     )
 
 
@@ -225,7 +263,7 @@ def test_status_tells_how_each_feature_runs(data_dir, monkeypatch, capsys):
 
     monkeypatch.setattr(control, "ask", ask)
     cli.main(["status"])
-    assert capsys.readouterr().out.splitlines()[-1] == "Web app: on port 8080"
+    assert capsys.readouterr().out.splitlines()[-2] == "Web app: on port 8080"
 
 
 def test_the_daemon_runs_its_features(data_dir, monkeypatch):

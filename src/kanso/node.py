@@ -8,17 +8,29 @@ view and its store, and hear about changes made elsewhere via `subscribe`.
 """
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from datetime import date, datetime
 from typing import Protocol
 
+from kanso import __version__, build
 from kanso.core.store import Store
 from kanso.sync import node as sync_node
 from kanso.sync.node import SyncNode
+from kanso.sync.protocol import version as sync_version
 
 type Listener = Callable[[bool], None]
 type StartSync = Callable[[Store, Listener], Awaitable[SyncNode]]
 type Interface = Callable[["Node"], Awaitable[object]]
+
+def which_kanso(daemon: dict) -> str:
+    """Which kanso `daemon` (`NodeView.daemon`) runs, as a note tells it."""
+    if not (version := daemon["version"]):
+        return "an older kanso"
+    return f"another build of kanso {version}" if version == __version__ else f"kanso {version}"
+
+
+log = logging.getLogger(__name__)
 
 DAY_CHECK = 60
 """Seconds between checks whether the date changed."""
@@ -51,6 +63,10 @@ class NodeView:
     """The names of the devices running an older kanso, which can't take this one's changes."""
     feature_status: dict[str, dict] = {}
     """The status of each configured daemon feature, by name; see `Feature.status`."""
+    daemon: dict | None = None
+    """Which kanso the daemon this view attaches to runs, if that's another process: its
+    `version`, `build` and `sync` version, each `None` from a daemon too old to tell
+    (`control.identity`). A daemon keeps running the kanso it started with."""
 
     def __init__(self, store: Store):
         self.store = store
@@ -61,6 +77,11 @@ class NodeView:
         notes = ["Update kanso: a device runs a newer one, whose changes this one can't take"] if self.outdated else []
         if behind := self.behind:
             notes.append(f"{', '.join(behind)} {'needs' if len(behind) == 1 else 'need'} a kanso update to get the changes")
+        if (daemon := self.daemon) is not None and daemon["build"] != build():
+            if isinstance(daemon["sync"], list) and tuple(daemon["sync"]) > sync_version():
+                notes.append(f"The kanso daemon runs {which_kanso(daemon)}, of a newer sync version: update this kanso")
+            else:
+                notes.append(f"The kanso daemon runs {which_kanso(daemon)}: open kanso again, or run `kanso start`, to run this one")
         return notes
 
     def subscribe(self, listener: Listener) -> Callable[[], None]:
@@ -128,7 +149,8 @@ class Node(NodeView):
         if date.today() == self.day:
             return
         self.day = date.today()
-        self.store.spawn(self.day)
+        spawned = self.store.spawn(self.day)
+        log.info("A new day, %s: spawned %d todos and habit days", self.day, len(spawned))
         self.notify(True)
 
     async def keep_day(self):

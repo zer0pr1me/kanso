@@ -5,6 +5,7 @@ same database just read and write it, and the node picks their changes up by pol
 """
 
 import asyncio
+import logging
 import os
 import socket
 from collections.abc import Callable
@@ -12,14 +13,17 @@ from datetime import datetime
 from pathlib import Path
 
 from kanso.core.store import Store
+from kanso.log import short
 from kanso.sync import protocol
-from kanso.sync.protocol import Result
+from kanso.sync.protocol import Result, version
 from kanso.sync.transport import IrohTransport, SyncError, Transport
 
 POLL = 2
 """Seconds between checks for local changes to send."""
 ROUND = 60
 """Seconds between syncs with every device even without local changes, to pull theirs."""
+
+log = logging.getLogger(__name__)
 
 
 class SyncNode:
@@ -34,9 +38,16 @@ class SyncNode:
         """Why the last session failed, if it did."""
         self.peers: dict[str, Result] = {}
         """The last session's result with each device, by key: its name and version."""
+        self.failures: dict[str, set[str]] = {}
+        """How sessions with each device failed, by key, since one last went through."""
         self.synced_change: str | None = None
         self.wake = asyncio.Event()
         self.sessions: set[asyncio.Task] = set()
+        """Every session going, served or dialed."""
+        self.dialing: dict[str, asyncio.Task] = {}
+        """The session `sync_all` started with each device, by key, while it's going."""
+        self.again: set[str] = set()
+        """Devices to dial again once their session ends, as there's news since it began."""
 
     async def run(self):
         """Serve and sync until the transport closes; returns once no session is left running."""
@@ -64,10 +75,10 @@ class SyncNode:
     async def answer(self, key: str, channel):
         try:
             result = await protocol.answer(self.store, channel, key, self.transport, self.name)
-            self.online.add(key)
-            self.report(key, result)
         except SyncError as error:
-            self.error = str(error)
+            self.failed(key, error)
+            return
+        self.report(key, result, "dialed us")
 
     async def keep_synced(self):
         """Sync with every device on start, after local changes, and every `ROUND` seconds."""
@@ -76,35 +87,80 @@ class SyncNode:
         while True:
             if self.store.last_change() != self.synced_change or loop.time() >= next_round:
                 next_round = loop.time() + ROUND
-                await self.sync_all()
+                self.sync_all()
             try:
                 await asyncio.wait_for(self.wake.wait(), POLL)
             except TimeoutError:
                 pass
             self.wake.clear()
 
-    async def sync_all(self):
-        """One session with each other device of the network, all at once."""
+    def sync_all(self):
+        """Start a session with each other device of the network, without waiting for them, so a
+        device slow to reach holds up none of the others. One whose last session is still going
+        gets another once it ends, which carries what changed since."""
         protocol.introduce_all(self.store, self.transport)
         self.synced_change = self.store.last_change()
-        peers = [d.key for d in self.store.devices() if d.key != self.transport.key]
-        results = await asyncio.gather(*(self.dial(key) for key in peers), return_exceptions=True)
-        self.online = {key for key, result in zip(peers, results) if isinstance(result, Result)}
+        for key in [d.key for d in self.store.devices() if d.key != self.transport.key]:
+            if key in self.dialing:
+                self.again.add(key)
+            else:
+                self.start_session(key)
         self.synced_at = datetime.now()
         self.on_update(False)
+
+    def start_session(self, key: str):
+        task = asyncio.create_task(self.dial_in_round(key))
+        self.dialing[key] = task
+        self.sessions.add(task)
+        task.add_done_callback(lambda done: self.session_ended(key, done))
+
+    async def dial_in_round(self, key: str):
+        try:
+            await self.dial(key)
+        except SyncError:
+            pass  # noted by `failed`
+
+    def session_ended(self, key: str, task: asyncio.Task):
+        self.sessions.discard(task)
+        del self.dialing[key]
+        if key in self.again:
+            self.again.discard(key)
+            if not task.cancelled():  # not stopping
+                self.start_session(key)
 
     async def dial(self, key: str, code: str | None = None) -> Result:
         try:
             result = await protocol.dial(self.store, self.transport, key, self.name, code)
         except SyncError as error:
-            self.error = str(error)
+            self.failed(key, error)
             raise
-        self.report(key, result)
+        self.report(key, result, "we dialed")
         return result
 
-    def report(self, key: str, result: Result):
+    def report(self, key: str, result: Result, how: str = "reported"):
+        """Note a session with device `key` that went through; `how` it began, for the log."""
+        if key not in self.online:
+            log.info("%s (%s) is online", result.peer, short(key))
+        previous = self.peers.get(key)
+        if result.version != version() and (previous is None or previous.version != result.version):
+            log.info("%s runs a kanso of sync version %s.%s; this one, %s.%s", result.peer, *result.version, *version())
         self.error, self.peers[key] = None, result
+        self.online.add(key)
+        self.failures.pop(key, None)
+        log.log(logging.INFO if result.changed else logging.DEBUG, "Synced with %s (%s): %d rows in", result.peer, how, result.changed)
         self.on_update(result.changed > 0)
+
+    def failed(self, key: str, error: SyncError):
+        """Note a session with `key` that failed: in the log once for each way it fails, until
+        a session goes through again."""
+        self.error = str(error)
+        self.online.discard(key)
+        seen = self.failures.setdefault(key, set())
+        level = logging.DEBUG if self.error in seen else logging.WARNING
+        seen.add(self.error)
+        device = next((d.name for d in self.store.devices() if d.key == key), "a device")
+        log.log(level, "Sync with %s (%s) failed: %s", device, short(key), self.error.replace(key, short(key)))
+        self.on_update(False)
 
     @property
     def outdated(self) -> bool:
@@ -122,7 +178,6 @@ class SyncNode:
     async def pair(self, key: str, code: str) -> Result:
         """Join the network of node `key` with its pairing code; then sync with all its devices."""
         result = await self.dial(key, code)
-        self.online.add(key)
         self.wake.set()
         return result
 

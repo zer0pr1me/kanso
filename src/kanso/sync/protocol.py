@@ -30,6 +30,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import logging
 import secrets
 import time
 from contextlib import asynccontextmanager
@@ -38,7 +39,10 @@ from dataclasses import dataclass, field
 from kanso.core.migrations import current_version
 from kanso.core.store import Store
 from kanso.core.sync import wanted
+from kanso.log import short
 from kanso.sync.transport import Channel, SyncError, Transport
+
+log = logging.getLogger(__name__)
 
 PROTOCOL = 1
 """The version of the session after hello and welcome: bump it on any change to it that
@@ -67,6 +71,7 @@ def new_code(store: Store) -> str:
     """A fresh single-use code, replacing any earlier one, as `ABCDE-FGHJK`."""
     code = "".join(secrets.choice(CODE_ALPHABET) for _ in range(CODE_LENGTH))
     store.set_meta("pair_code", json.dumps({"code": code, "expires": time.time() + CODE_TTL, "failures": 0}))
+    log.info("Made a pairing code, valid %d minutes", CODE_TTL // 60)
     return f"{code[:5]}-{code[5:]}"
 
 
@@ -192,6 +197,7 @@ async def dial(store: Store, transport: Transport, key: str, name: str, code: st
             if code:
                 store.add_device(key, welcome["name"])
                 introduce_all(store, transport)
+                log.info("Paired with %s (%s), with its code", welcome["name"], short(key))
             if peer[0] != PROTOCOL:
                 return Result(welcome["name"], 0, peer)
             mine = store.digest()
@@ -213,10 +219,14 @@ async def answer(store: Store, channel: Channel, key: str, transport: Transport,
                 if isinstance(given := hello.get("proof"), str):
                     if not check_proof(store, given, key, transport.key):
                         await refuse(channel, "Wrong or expired code")
+                    how = "with this device's code"
                 elif store.knows_device(key) or not vouched(store, transport, key, hello.get("introductions")):
                     await refuse(channel, "Not paired: connect with this node's code")
+                else:
+                    how = "introduced by devices of this network"
                 store.add_device(key, hello["name"])
                 introduce_all(store, transport)
+                log.info("Paired with %s (%s), %s", hello["name"], short(key), how)
             await channel.send({"type": "welcome", "protocol": PROTOCOL, "schema": current_version(), "name": name})
             if peer[0] != PROTOCOL:
                 return Result(hello["name"], 0, peer)

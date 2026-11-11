@@ -11,6 +11,7 @@ sync sends only changed rows; never touch the `meta` table.
 """
 
 import json
+import logging
 from collections.abc import Callable
 
 from sqlalchemy import Connection, Engine, inspect, text
@@ -64,6 +65,8 @@ MIGRATIONS: list[Callable[[Rows], Rows]] = [
 
 VERSION_KEY = "schema_version"
 
+log = logging.getLogger(__name__)
+
 
 def current_version() -> int:
     return len(MIGRATIONS)
@@ -86,6 +89,7 @@ def migrate(engine: Engine):
         if version == current_version():
             SQLModel.metadata.create_all(conn)
         else:
+            log.info("Upgrading the database from schema %d to %d", version, current_version())
             rows = upgrade(dump(conn, tables), version)
             for table in tables:
                 conn.execute(text(f'DROP TABLE "{table}"'))

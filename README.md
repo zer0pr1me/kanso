@@ -27,12 +27,31 @@ your other devices, also while no UI is open. `kanso` opens the terminal UI on
 it; quitting the UI leaves the daemon running. Each data directory has one
 daemon, however many UIs are open on it. On an always-online device, such as a
 home server, the others can sync through it. To run the daemon from a service
-manager such as systemd, use `kanso start --foreground`, which stops on SIGTERM.
-It logs to `daemon.log` in the data directory.
+manager such as systemd, use `kanso start --foreground`, which stops on SIGTERM
+and logs to stderr too.
 
 Data is stored in a local SQLite database in the user data directory
 (`~/.local/share/kanso/kanso.db` on Linux). Set `KANSO_DATA_DIR` to keep it
 elsewhere: `KANSO_DATA_DIR=~/kanso uv run kanso`.
+
+## Logs
+
+Every kanso process, the daemon, UIs and commands, logs to `kanso.log` in the
+data directory (`kanso status` prints where). Each line tells when, which
+process (`daemon`, `tui`, `cli` or `web`, and its pid) and what happened: the
+daemon starting (with its version and build) and stopping, and why; another
+kanso taking over the daemon; devices coming online, failing to sync and why,
+running other versions, and pairing; the database being upgraded; a new day's
+todos; and crashes, with their tracebacks. It never holds your todos, habits or
+lists, pairing codes or keys beyond a short prefix of each device's ID.
+
+```sh
+tail -f ~/.local/share/kanso/kanso.log
+KANSO_LOG=debug uv run kanso start   # also every sync session, and failures each time
+```
+
+The daemon keeps the log under about 1 MB, plus three older ones (`kanso.log.1`
+and on).
 
 ## Sync between devices
 
@@ -71,6 +90,16 @@ both survive. The header, and `kanso status`, show how many devices are online.
   device's kanso version and the sync protocol and schema it speaks; the header
   shows the version too. What changed in each version is in
   [CHANGELOG.md](CHANGELOG.md).
+- A daemon keeps running the kanso it started with, which is the one other
+  devices see. So whenever you open kanso, or run `kanso start`, it replaces a
+  daemon running another kanso (newer, older, or a dev build) with itself, and
+  UIs left open attach to the new one. It doesn't replace a daemon that speaks a
+  newer sync version, which it couldn't follow; the UI then asks you to update.
+- Developing kanso on your real data directory works the same way: `uv run
+  kanso` takes the daemon over from the installed kanso, and the installed one
+  takes it back the next time you open it. Once your dev build changes the
+  schema, though, it upgrades the database, which the installed kanso then
+  can't open until it's updated too; use `KANSO_DATA_DIR` for such dev work.
 
 ## Install on NixOS
 
@@ -101,9 +130,16 @@ Then, in a home-manager user configuration:
     enable = true;
     # Optional; defaults to ~/.local/share/kanso.
     dataDir = "${config.home.homeDirectory}/kanso";
+    # Optional: run the daemon as a systemd user service from login on.
+    daemon.enable = true;
   };
 }
 ```
+
+With `daemon.enable`, home-manager restarts the daemon when a switch changes kanso
+(with `systemd.user.startServices` on), so it always runs the installed kanso. If
+another kanso takes over from it, such as a dev build, the service stops cleanly
+and starts again with the next login or switch.
 
 This installs both `kanso` and `kanso-web`. `dataDir` is baked into them as the
 default `KANSO_DATA_DIR`; setting the variable yourself still takes precedence.

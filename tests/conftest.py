@@ -1,4 +1,6 @@
 import asyncio
+import logging
+import sys
 from contextlib import AsyncExitStack, asynccontextmanager, nullcontext
 
 import pytest
@@ -16,6 +18,20 @@ def quick_idle_checks(monkeypatch):
     """Pilot waits for the app to idle after every key, sleeping 20ms per check; 2ms checks
     find it idle just as well and make the TUI tests several times faster."""
     monkeypatch.setattr(textual._wait, "SLEEP_GRANULARITY", 1 / 500)
+
+
+@pytest.fixture(autouse=True)
+def kanso_logging():
+    """kanso's records reach `caplog` at every level; a `log.setup` a test runs is undone after."""
+    kanso, hook = logging.getLogger("kanso"), sys.excepthook
+    kanso.setLevel(logging.DEBUG)
+    yield
+    root = logging.getLogger()
+    for handler in [h for h in root.handlers if getattr(h, "kanso", False)]:
+        root.removeHandler(handler)
+        handler.close()
+    kanso.setLevel(logging.NOTSET)
+    sys.excepthook = hook
 
 
 @pytest.fixture(autouse=True)

@@ -5,7 +5,7 @@ Personal, single-user, local-first todo app, rewritten from scratch in `src/kans
 Kanso is a P2P node at its base, in one executable, `kanso`. The node runs as a daemon in the background, one per data dir, storing the data and syncing it. Features run inside the daemon and are switched on or off there; planned: `kanso web-app start|stop`, an API. Only the TUI runs in the foreground: it is plain `kanso`, which starts the daemon if needed and attaches to it. Interfaces use only a `NodeView` and its `Store`, never the sync internals, so they stay independent of each other and of networking.
 
 - `node.py`: `NodeView` is what interfaces see: store, device key, sync status, `subscribe` for changes from elsewhere, and `pair`. `Node` is the node itself. It owns the store, sync (when its process owns the data dir, via `owner_lock`) and the day rollover (`check_day` spawns each new day's instances). `Node.run` runs the daemon's features, each an `async (node) -> result`, until the first one returns. A feature with settings registers a `Feature` in `Node.features` while it runs: its `status()` (`None` while not configured, so interfaces say nothing of it) reaches interfaces as `NodeView.feature_status`, and `reload()` re-reads its settings after the CLI changed them.
-- `control.py`: the daemon (`serve`, its control feature) and how other processes reach it. It listens on localhost; `daemon.json` holds the port and the token. One JSON request per connection: `watch`, `status`, `pair`, `reload` (a feature) or `stop`. `NodeClient` is the `NodeView` for other processes: the data goes through their own `Store` on the shared database, and status and pairing go through the daemon. `link` starts the daemon if none runs, or falls back to a local `Node` without sync.
+- `control.py`: the daemon (`serve`, its control feature) and how other processes reach it. It listens on localhost; `daemon.json` holds the port and the token. One JSON request per connection: `watch`, `status`, `pair`, `reload` (a feature) or `stop`. `NodeClient` is the `NodeView` for other processes: the data goes through their own `Store` on the shared database, and status and pairing go through the daemon. `link` starts the daemon if none runs, or falls back to a local `Node` without sync. A daemon runs the code it started with, so `start` replaces one of another build (`kanso.build`, a hash of the code) unless it speaks a newer sync version (`replaceable`), and `start --foreground` takes over from any it may; clients reattach when theirs goes away. Other processes of this kanso run via `command()`, which hands over `sys.path` (a bare `python -m kanso` can't import kanso on Nix).
 - `__main__.py`: the CLI: `kanso` (the TUI), `kanso start [--foreground]`, `kanso stop`, `kanso status`, `kanso connect [ID CODE]` (pairing without the TUI), `kanso version` (also `--version`), `kanso help [command]` (also `kanso <command> help`). `parser()` builds it. A feature's commands save its settings in the store and `reload` it in the daemon.
 - `core/`: no UI dependencies; the part every interface (TUI; future web, mobile) builds on. Shared presentation helpers that need no UI library, such as `order.human_date`, live here too.
   - `store.py`: `Store`, the database and every operation on it. UIs call only this.
@@ -23,8 +23,9 @@ Kanso is a P2P node at its base, in one executable, `kanso`. The node runs as a 
     - A change to the session after welcome that the current version can't follow bumps `PROTOCOL`; peers of different protocols stop after welcome. A new optional field doesn't.
     - A change to the synced data, including only to what a field means, how instance ids derive, or how stamps compare and merge, needs a migration (even one leaving rows as they are), so the schema version moves.
     - Anything else (UI, CLI, daemon, features) is free: it doesn't affect sync.
-  - `node.py`: `SyncNode` serves peers and syncs with every device on start, after local changes and periodically; `owner_lock` makes one process per data dir the one that syncs.
+  - `node.py`: `SyncNode` serves peers and syncs with every device on start, after local changes and periodically, each device's session on its own, so a slow one holds up no other (one still going gets another once it ends); `owner_lock` makes one process per data dir the one that syncs.
 - `tui/`: Textual app, the only interface so far; `tui.app.run` is its entry on a `NodeView`.
+- `log.py`: the log, `kanso.log` in the data dir, which every process appends to; `__main__.main` (and `web.main`) sets it up once per process with its role, and only the daemon rotates it. Modules log with `logging.getLogger(__name__)`.
 - `web.py`: `kanso-web`, which serves the TUI in the browser via textual-serve, with one `kanso` TUI process per tab attached to the daemon. It is still separate for now: the real web interface should become a daemon feature (`kanso web-app start`).
 
 How to run the app is documented in `README.md`. Keep it up to date whenever commands, ports, requirements, or setup steps change.
@@ -40,6 +41,10 @@ The CLI's help is part of every feature. Each command (added with `command` in `
 - Internal-only changes (refactors, tests, docs for developers): none.
 
 Bump once per commit that needs it, to the highest level its changes need; in the same commit, add the version's entry to `CHANGELOG.md` and run `uv lock` (it records the version).
+
+# Logging
+
+Log what a later investigation would need, with `logging.getLogger(__name__)`: INFO for each state change (a daemon starting or stopping, and why; a device coming online; pairing; a migration), WARNING for a failure, the first time while it repeats, and DEBUG for routine chatter (every sync session, repeats of a failure). Every new behavior that changes state or can fail logs that way. Never log todo, habit or list contents, pairing codes, tokens or secret keys; name devices by their name and `log.short` key. Tests see every level in `caplog`; check the lines that matter, and that secrets stay out.
 
 # Code style
 

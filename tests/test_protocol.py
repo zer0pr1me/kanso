@@ -131,6 +131,19 @@ def introductions(node: Node) -> set[tuple[str, str]]:
     return {(i.by, i.key) for i in node.store.introductions()}
 
 
+def test_pairing_is_logged_but_never_the_code_or_the_data(pair, caplog):
+    a, b = pair
+    a.store.add_todo(a.store.lists()[0].id, "SECRET-TODO")
+    code = new_code(b.store)
+    connect(a, b, code)
+    assert "Made a pairing code, valid 10 minutes" in caplog.messages
+    assert "Paired with b (key-b), with its code" in caplog.messages
+    assert "Paired with a (key-a), with this device's code" in caplog.messages
+    logged = caplog.text  # every record, at every level
+    for secret in ("SECRET-TODO", "from a", "from b", code, normalize(code)):
+        assert secret not in logged
+
+
 def test_pairing_introduces_each_to_the_other_on_both_sides(pair):
     a, b = pair
     connect(a, b, new_code(b.store))
@@ -138,7 +151,7 @@ def test_pairing_introduces_each_to_the_other_on_both_sides(pair):
     assert all(MemoryTransport.verify(i.by, introduction(i.key), i.signature) for i in a.store.introductions())
 
 
-def test_a_device_introduced_by_a_trusted_one_is_admitted(make):
+def test_a_device_introduced_by_a_trusted_one_is_admitted(make, caplog):
     """a paired with b; then b with c while a was away: c reaches a without b."""
     a, b, c = make("a"), make("b"), make("c")
     connect(a, b, new_code(b.store))
@@ -147,6 +160,7 @@ def test_a_device_introduced_by_a_trusted_one_is_admitted(make):
     dialed, served = connect(c, a)
     assert dialed.peer == "a" and served.peer == "c" and served.changed > 0
     assert a.store.is_trusted(c.key) and contents(a) == [("C", ["from c"])]
+    assert "Paired with c (key-c), introduced by devices of this network" in caplog.messages
     assert (a.key, c.key) in introductions(a)  # a vouches for c too now
     assert connect(a, c) == (Result("c", 0), Result("a", 0))
 

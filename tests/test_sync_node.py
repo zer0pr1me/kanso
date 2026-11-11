@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 
 import pytest
@@ -189,6 +190,65 @@ def test_nodes_introduce_devices_they_learned_before_introductions(make):
     asyncio.run(main())
 
 
+def test_a_device_slow_to_reach_holds_up_no_other(make, monkeypatch):
+    a, b, c = make("a"), make("b"), make("c")
+    dial = protocol.dial
+
+    async def slow_to_c(store, transport, key, *args):
+        if key == "key-c":
+            await asyncio.Event().wait()  # as an unreachable device, until the timeout
+        return await dial(store, transport, key, *args)
+
+    async def main():
+        await running(a, b, c)
+        await a.pair(b.transport.key, new_code(b.store))
+        await a.pair(c.transport.key, new_code(c.store))
+        monkeypatch.setattr(protocol, "dial", slow_to_c)
+        await eventually(lambda: "key-c" in a.dialing)
+        add_todo(a, "x")
+        await eventually(lambda: texts(b) == ["x"])
+        assert "key-c" in a.dialing and "key-c" in a.again  # it gets the news once it's through
+        await stop(a, b, c)  # also ends the stuck session, for good
+        assert a.dialing == {} and a.sessions == set()
+
+    asyncio.run(main())
+
+
+def test_news_during_a_session_gets_another_once_it_ends(make, monkeypatch):
+    a, b = make("a"), make("b")
+    dial, gate, dials = protocol.dial, asyncio.Event(), []
+
+    async def held(store, transport, key, *args):
+        """a's sessions with b wait for the gate; b may pull from a as it would."""
+        if transport.key == "key-a":
+            dials.append(key)
+            await gate.wait()
+        return await dial(store, transport, key, *args)
+
+    async def main():
+        await running(a, b)
+        await a.pair(b.transport.key, new_code(b.store))
+        await eventually(lambda: not a.dialing)
+        monkeypatch.setattr(protocol, "dial", held)
+        add_todo(a, "x")
+        await eventually(lambda: "key-b" in a.dialing)
+        add_todo(a, "y")  # after that session began
+        await eventually(lambda: "key-b" in a.again)
+        gate.set()
+        await eventually(lambda: texts(b) == ["x", "y"] and dials.count("key-b") >= 2)
+        await stop(a, b)
+
+    asyncio.run(main())
+
+
+def test_failures_tell_keys_short(make, caplog):
+    a = make("a")
+    key = "f" * 64
+    a.failed(key, SyncError(f"Can't reach {key}: timed out"))
+    assert caplog.messages == ["Sync with a device (ffffffffff) failed: Can't reach ffffffffff: timed out"]
+    assert a.error == f"Can't reach {key}: timed out"  # what the UI tells stays whole
+
+
 def test_failed_pairing_raises_and_the_node_keeps_serving(make):
     a, b, c = make("a"), make("b"), make("c")
 
@@ -234,7 +294,38 @@ def test_rounds_repeat_without_changes(make, monkeypatch):
     asyncio.run(main())
 
 
-def test_devices_on_other_versions_are_reported(make):
+def test_the_log_tells_when_a_device_comes_and_goes_once(make, monkeypatch, caplog):
+    monkeypatch.setattr(node_module, "ROUND", 0.02)
+    a, b = make("a"), make("b")
+
+    async def main():
+        await running(a, b)
+        await a.pair(b.transport.key, new_code(b.store))
+        add_todo(a, "x")
+        await eventually(lambda: texts(b) == ["x"])
+        await stop(b)
+        await eventually(lambda: "Can't reach key-b" in a.failures.get("key-b", ()))
+        rounds = a.updates.count(False)
+        await eventually(lambda: a.updates.count(False) >= rounds + 3)  # more rounds failing alike
+        restart(b)
+        await running(b)
+        await eventually(lambda: "key-b" in a.online)
+        await stop(a, b)
+
+    asyncio.run(main())
+    of_a = [r.getMessage() for r in caplog.records if r.name == "kanso.sync.node" and r.levelno >= logging.INFO]
+    about_b = ["online" if m == "b (key-b) is online" else "failed" for m in caplog.messages if m == "b (key-b) is online" or m.startswith("Sync with b (key-b) failed")]
+    changes = [state for i, state in enumerate(about_b) if i == 0 or state != about_b[i - 1]]
+    assert about_b.count("online") == changes.count("online") >= 2  # each time it came, never twice in a row
+    assert about_b[0] == about_b[-1] == "online"
+    unreachable = "Sync with b (key-b) failed: Can't reach key-b"
+    failing = [r.levelname for r in caplog.records if r.getMessage() == unreachable]
+    assert failing[0] == "WARNING" and len(failing) > 1 and set(failing[1:]) == {"DEBUG"}  # told once, then quietly
+    assert not a.failures  # cleared once b was back
+    assert any(m.startswith("Synced with b (we dialed): ") for m in of_a)  # the rows pairing brought
+
+
+def test_devices_on_other_versions_are_reported(make, caplog):
     a = make("a")
     for name in "bcd":
         a.store.add_device(f"key-{name}", name)
@@ -246,6 +337,11 @@ def test_devices_on_other_versions_are_reported(make):
     assert a.outdated and a.behind == ["c", "d"] and a.updates == [False] * 4
     a.report("key-b", Result("b"))  # updated
     assert not a.outdated and a.behind == ["c", "d"]
+    told = [m for m in caplog.messages if " runs a kanso of sync version " in m]
+    assert told == [f"b runs a kanso of sync version {p}.{s + 1}; this one, {p}.{s}", f"c runs a kanso of sync version {p}.{s - 1}; this one, {p}.{s}",
+                    f"d runs a kanso of sync version {p - 1}.{s + 1}; this one, {p}.{s}", f"e runs a kanso of sync version {p}.{s - 1}; this one, {p}.{s}"]
+    a.report("key-c", Result("c", version=(p, s - 1)))  # still: not told again
+    assert len([m for m in caplog.messages if " runs a kanso of sync version " in m]) == 4
 
 
 def test_sessions_record_the_peers_version(make):

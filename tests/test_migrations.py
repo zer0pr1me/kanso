@@ -187,7 +187,7 @@ def test_upgrade_to_introductions_changes_no_rows():
     assert migrations.add_introductions(rows) == rows
 
 
-def test_upgrades_database_from_schema_0(path):
+def test_upgrades_database_from_schema_0(path, caplog):
     store = Store(path)
     inbox = store.add_list("Inbox")
     store.add_todo(inbox.id, "a")
@@ -206,6 +206,7 @@ def test_upgrades_database_from_schema_0(path):
     sql(path, "DROP TABLE habit")
     sql(path, "UPDATE meta SET value = '0' WHERE key = 'schema_version'")
     store = Store(path)
+    assert f"Upgrading the database from schema 0 to {migrations.current_version()}" in caplog.messages
     [todo] = store.todos(inbox.id)
     assert (todo.text, todo.labels, todo.repeat_id) == ("a", [], None)
     assert set(todo.stamps.values()) == {todo.modified_at} and "text" in todo.stamps

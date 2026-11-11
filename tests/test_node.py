@@ -85,7 +85,7 @@ def test_syncing_node_owns_the_data_dir_until_stopped(store):
     lock.close()
 
 
-def test_a_new_day_spawns_and_notifies(store, repeating, monkeypatch):
+def test_a_new_day_spawns_and_notifies(store, repeating, monkeypatch, caplog):
     async def main():
         async with Node(store) as node:
             updates = []
@@ -95,6 +95,7 @@ def test_a_new_day_spawns_and_notifies(store, repeating, monkeypatch):
             monkeypatch.setattr(node_module, "date", Tomorrow)
             node.check_day()
             assert updates == [True] and TOMORROW in days(store, repeating)
+            assert f"A new day, {TOMORROW}: spawned 1 todos and habit days" in caplog.messages
             unsubscribe()
             node.notify(False)
             assert updates == [True]

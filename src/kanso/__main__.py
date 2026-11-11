@@ -6,16 +6,20 @@ starting the daemon if it isn't running."""
 
 import argparse
 import asyncio
+import logging
 import sys
 
-from kanso import __version__, control
-from kanso.core.store import Store
-from kanso.node import Node
+from kanso import __version__, control, log
+from kanso.core.store import Store, default_path
+from kanso.node import Node, which_kanso
 from kanso.sync import node as sync_node
 from kanso.sync.protocol import CODE_TTL, new_code
 from kanso.sync.protocol import version as sync_version
 from kanso.sync.transport import SyncError
 from kanso.tui import app as tui
+
+logger = logging.getLogger("kanso.cli")
+
 
 async def open_tui(store: Store, args) -> str | None:
     node = await control.link(store)
@@ -24,14 +28,23 @@ async def open_tui(store: Store, args) -> str | None:
 
 
 async def start(store: Store, args) -> str | None:
+    daemon = await control.daemon_status(store)
     if args.foreground:
+        if daemon:
+            if not control.replaceable(daemon, take_over=True):
+                print(f"The kanso daemon runs {which_kanso(control.daemon_of(daemon))}, of a newer sync version: left it running")
+                return None
+            logger.info("Taking over from the running daemon (kanso %s, build %s)", daemon.get("version"), daemon.get("build"))
+            await control.replace(store)
         return await Node(store, sync_node.start).run([control.serve])
-    if await control.running(store):
+    if daemon and not control.replaceable(daemon):
         print("The kanso daemon already runs")
-    elif await control.start(store):
-        print("Started the kanso daemon")
-    else:
+    elif not await control.start(store):
         return f"The kanso daemon didn't start: see {control.log_file(store)}"
+    elif daemon:
+        print(f"Restarted the kanso daemon with this kanso: it ran {which_kanso(control.daemon_of(daemon))}")
+    else:
+        print("Started the kanso daemon")
 
 
 async def stop(store: Store, args) -> str | None:
@@ -72,6 +85,7 @@ async def status(store: Store, args) -> str | None:
         print(note)
     for feature in node.feature_status.values():
         print(f"{feature['title']}: {feature['note']}")
+    print(f"Log: {control.log_file(store)}")
 
 
 def version_text() -> str:
@@ -109,10 +123,15 @@ def parser() -> argparse.ArgumentParser:
         start,
         "start the daemon in the background",
         "Start the daemon in the background, if it isn't running yet. It stores your data and\n"
-        "syncs it with your other devices, also while no UI is open; it logs to daemon.log in\n"
-        "the data directory.",
+        "syncs it with your other devices, also while no UI is open; it logs to kanso.log in\n"
+        "the data directory, as every kanso process does (KANSO_LOG=debug tells more).\n\n"
+        "A daemon keeps running the kanso it started with, so this, and opening kanso, restarts\n"
+        "one running another kanso (newer, older or a dev build) with this one, unless it speaks\n"
+        "a newer sync version, which this kanso can't follow.",
     ).add_argument(
-        "--foreground", action="store_true", help="run it in the foreground instead, until SIGTERM or ctrl+c, as for systemd"
+        "--foreground",
+        action="store_true",
+        help="run it in the foreground instead, until SIGTERM or ctrl+c, as for systemd; replaces a running daemon",
     )
     command("stop", stop, "stop the daemon", "Stop the daemon. UIs open on it keep working, without sync.")
     command(
@@ -121,8 +140,8 @@ def parser() -> argparse.ArgumentParser:
         "show whether the daemon runs, and how many devices are online",
         "Show whether the daemon runs, this device's ID, how many of the paired devices it\n"
         "reached in its last round, and when it last synced; if this device or another one\n"
-        "runs an older kanso than the rest, which needs an update to sync fully; and how each\n"
-        "feature you started in the daemon runs.",
+        "runs an older kanso than the rest, which needs an update to sync fully; how each\n"
+        "feature you started in the daemon runs; and where the log is.",
     )
     pair = command(
         "connect",
@@ -160,6 +179,9 @@ def main(argv: list[str] | None = None):
     if args.command is show_version:  # needs no store
         show_version(args)
         return
+    daemon = args.command is start and args.foreground
+    role = "daemon" if daemon else "tui" if args.command is open_tui else "cli"
+    log.setup(default_path().parent, role, rotate=daemon, stderr=daemon)
     store = Store()
     try:
         error = asyncio.run(args.command(store, args))

@@ -120,6 +120,7 @@ class ListsPane(RecordPane[TodoList]):
         ("d", "delete", "Delete"),
         *MOVE_BINDINGS,
         Binding("right,l", "app.focus_pane", show=False),
+        Binding("escape", "app.quit", "Quit"),  # on the right, escape comes back here first
     ])
 
     class Emptied(Message):

@@ -114,6 +114,29 @@ def test_text_renders_plainly_not_as_markup(store):
     run(tui(store), check)
 
 
+def test_escape_goes_back_to_the_lists_and_then_quits(store, dated):
+    async def check(app, pilot):
+        await pilot.press("l")
+        assert app.focused.id == "todos"
+        await pilot.press("escape")
+        assert app.focused.id == "lists" and app.is_running
+        await pilot.press("escape")
+        await pilot.pause()
+        assert not app.is_running
+
+    run(tui(store), check)
+
+
+def test_escape_in_a_dialog_closes_only_the_dialog(store, dated):
+    async def check(app, pilot):
+        await pilot.press("c")  # the connect dialog
+        assert not on_main_screen(app)
+        await pilot.press("escape")
+        assert on_main_screen(app) and app.is_running
+
+    run(tui(store), check)
+
+
 @pytest.mark.parametrize("key", ["enter", "right", "l"])
 def test_entering_a_list_focuses_its_first_todo(store, dated, key):
     async def check(app, pilot):
