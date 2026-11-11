@@ -1,11 +1,11 @@
 """One sync session between two nodes, over a `Channel` (`transport.py`).
 
-    dialer                                    acceptor
-    hello {protocol, schema, name, proof?}  ->
-                                            <-  welcome {protocol, schema, name} | refuse {reason}
-    digest {digest}               ->
-                                  <-  rows {schema, digest, rows}
-    rows {schema, rows}           ->
+    dialer                                                    acceptor
+    hello {protocol, schema, name, proof?, introductions?}  ->
+                                <-  welcome {protocol, schema, name} | refuse {reason}
+    digest {digest}             ->
+                                <-  rows {schema, digest, rows}
+    rows {schema, rows}         ->
 
 Hello and welcome keep this shape in every version of kanso, so peers always learn each
 other's version (`protocol` defaults to 1, as the first releases didn't send it). The
@@ -19,6 +19,11 @@ Strict turn-taking, so neither side can block writing while the other does too. 
 acceptor talks to devices of its network, which the transport has already authenticated
 by key, or to a new node proving it was given this node's pairing code; pairing makes
 each the other's device, and since devices are synced rows, both networks become one.
+
+Each node signs an introduction of every device it trusts (`introduce_all`), synced as rows.
+A dialer the acceptor doesn't know yet joins when its hello's introductions chain from a
+device the acceptor trusts to the dialer, so devices that never met, paired through one
+that is offline now, still sync. A device the acceptor removed is never admitted this way.
 """
 
 import asyncio
@@ -44,6 +49,9 @@ def version() -> tuple[int, int]:
     """This kanso's version, as peers compare it: protocol, then schema."""
     return PROTOCOL, current_version()
 
+
+MAX_INTRODUCTIONS = 1000
+"""The most introductions an acceptor checks from one hello."""
 
 CODE_ALPHABET = "ABCDEFGHJKMNPQRSTVWXYZ23456789"  # no 0/O, 1/I/L or U
 CODE_LENGTH = 10
@@ -86,6 +94,41 @@ def check_proof(store: Store, given: str, dialer: str, acceptor: str) -> bool:
     pending["failures"] += 1
     store.set_meta("pair_code", json.dumps(pending) if pending["failures"] < CODE_ATTEMPTS else None)
     return False
+
+
+# Introductions
+
+
+def introduction(key: str) -> bytes:
+    """What a device signs to vouch for device `key`."""
+    return f"kanso-device|{key}".encode()
+
+
+def introduce_all(store: Store, transport: Transport):
+    """Sign an introduction of every other device this node trusts, unless it has already."""
+    signed = {i.key for i in store.introductions() if i.by == transport.key}
+    for device in store.devices():
+        if device.key != transport.key and device.key not in signed:
+            store.introduce(device.key, transport.key, transport.sign(introduction(device.key)))
+
+
+def vouched(store: Store, transport: Transport, key: str, introductions) -> bool:
+    """Whether `introductions`, `[by, key, signature]` each, chain from a trusted device to `key`."""
+    if not isinstance(introductions, list):
+        return False
+    edges = [i for i in introductions[:MAX_INTRODUCTIONS] if isinstance(i, list) and len(i) == 3]
+    edges = [i for i in edges if all(isinstance(f, str) for f in i)]
+    reached = {d.key for d in store.devices()}
+    while key not in reached:
+        new = {
+            to
+            for by, to, signature in edges
+            if by in reached and to not in reached and transport.verify(by, introduction(to), signature)
+        }
+        if not new:
+            return False
+        reached |= new
+    return True
 
 
 # Sessions
@@ -141,11 +184,14 @@ async def dial(store: Store, transport: Transport, key: str, name: str, code: st
         channel = await transport.connect(key)
         try:
             given = proof(code, transport.key, key) if code else None
-            await channel.send({"type": "hello", "protocol": PROTOCOL, "schema": current_version(), "name": name, "proof": given})
+            introductions = [[i.by, i.key, i.signature] for i in store.introductions()]
+            hello = {"type": "hello", "protocol": PROTOCOL, "schema": current_version(), "name": name}
+            await channel.send({**hello, "proof": given, "introductions": introductions})
             welcome = await receive(channel, "welcome", schema=int, name=str)
             peer = peer_version(welcome)
             if code:
                 store.add_device(key, welcome["name"])
+                introduce_all(store, transport)
             if peer[0] != PROTOCOL:
                 return Result(welcome["name"], 0, peer)
             mine = store.digest()
@@ -157,18 +203,20 @@ async def dial(store: Store, transport: Transport, key: str, name: str, code: st
             await channel.close()
 
 
-async def answer(store: Store, channel: Channel, key: str, own_key: str, name: str) -> Result:
+async def answer(store: Store, channel: Channel, key: str, transport: Transport, name: str) -> Result:
     """Serve a node that dialed us, which proved it holds `key`."""
     async with session():
         try:
             hello = await receive(channel, "hello", schema=int, name=str)
             peer = peer_version(hello)
             if not store.is_trusted(key):
-                if not isinstance(given := hello.get("proof"), str):
+                if isinstance(given := hello.get("proof"), str):
+                    if not check_proof(store, given, key, transport.key):
+                        await refuse(channel, "Wrong or expired code")
+                elif store.knows_device(key) or not vouched(store, transport, key, hello.get("introductions")):
                     await refuse(channel, "Not paired: connect with this node's code")
-                if not check_proof(store, given, key, own_key):
-                    await refuse(channel, "Wrong or expired code")
                 store.add_device(key, hello["name"])
+                introduce_all(store, transport)
             await channel.send({"type": "welcome", "protocol": PROTOCOL, "schema": current_version(), "name": name})
             if peer[0] != PROTOCOL:
                 return Result(hello["name"], 0, peer)

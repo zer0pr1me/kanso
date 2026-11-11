@@ -23,6 +23,7 @@ from kanso.core.models import (
     Device,
     Habit,
     HabitDay,
+    Introduction,
     Meta,
     Record,
     Repeat,
@@ -30,6 +31,7 @@ from kanso.core.models import (
     Todo,
     TodoList,
     device_id,
+    introduction_id,
 )
 from kanso.core.repeats import RULE_FIELDS, clean_rule, occurs_on
 from kanso.core.sync import Digest, decode, encode, newest_stamp, stamps_hash
@@ -503,6 +505,18 @@ class Store:
         if not device.position:
             device.position = self._position_at(self.devices(), None)
         return self._save(device)
+
+    def knows_device(self, key: str) -> bool:
+        """Whether `key` is or was a device of this network: a removed one stays known."""
+        return self.db.get(Device, device_id(key)) is not None
+
+    def introductions(self) -> list[Introduction]:
+        return list(self.db.exec(select(Introduction).order_by(Introduction.id)).all())
+
+    def introduce(self, key: str, by: str, signature: str):
+        """Record that `by` vouches for `key`, unless it's recorded already."""
+        if not self.db.get(Introduction, introduction_id(by, key)):
+            self._save(Introduction(id=introduction_id(by, key), key=key, by=by, signature=signature, position=""))
 
     # Sync: raw rows in and out (see `sync.py`)
 

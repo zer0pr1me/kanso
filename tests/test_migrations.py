@@ -182,6 +182,11 @@ def test_upgrade_to_habits_changes_no_rows():
     assert migrations.add_habits(rows) == rows
 
 
+def test_upgrade_to_introductions_changes_no_rows():
+    rows = {"device": [{"id": "d"}]}
+    assert migrations.add_introductions(rows) == rows
+
+
 def test_upgrades_database_from_schema_0(path):
     store = Store(path)
     inbox = store.add_list("Inbox")

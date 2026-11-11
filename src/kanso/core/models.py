@@ -104,7 +104,21 @@ def device_id(key: str) -> UUID:
     return uuid5(DEVICE_NAMESPACE, key)
 
 
-SYNCED_MODELS = (TodoList, Repeat, Habit, Todo, HabitDay, Device)
+class Introduction(Record, table=True):
+    """Device `by` vouching for device `key` with its `signature` (`protocol.introduction`), so
+    devices that never met admit each other through devices they trust. Never changes once
+    written, and the id derives from both keys, so replicas only ever add to the set."""
+
+    key: str = Field(index=True)
+    by: str
+    signature: str
+
+
+def introduction_id(by: str, key: str) -> UUID:
+    return uuid5(DEVICE_NAMESPACE, f"{by}|{key}")
+
+
+SYNCED_MODELS = (TodoList, Repeat, Habit, Todo, HabitDay, Device, Introduction)
 """The tables replicas exchange, parents first."""
 
 UNSTAMPED = {"id", "modified_at", "stamps"}

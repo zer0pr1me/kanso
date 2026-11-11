@@ -43,6 +43,7 @@ def test_every_field_of_every_synced_model_persists(path):
     s.update_todo(s.todos(todo_list.id)[0].id, done=True, labels=["home"], scheduled_at=None)
     s.mark_habit_day(started_days_ago(s, todo_list, "h", 1).id, "success")
     s.add_device("k", "Laptop")
+    s.introduce("k", "j", "signature")
     before = {m: [r.model_dump() for r in s.db.exec(select(m))] for m in SYNCED_MODELS}
     s.close()
     s = Store(path)
@@ -57,6 +58,7 @@ def test_clock_resumes_after_stored_stamps(path, model):
     s.add_repeat(todo_list.id, "r")
     s.add_habit(todo_list.id, "h")
     s.add_device("k", "Laptop")
+    s.introduce("k", "j", "signature")
     latest = s.db.exec(select(model).order_by(model.modified_at.desc())).first()
     # Make this model's stamp the newest, as if written by a replica with a clock ahead.
     latest.modified_at = "999999999999999-000000-z"
@@ -615,11 +617,21 @@ def test_add_device_trusts_its_key(store):
     assert [d.name for d in store.devices()] == ["Laptop", "Phone"]
 
 
+def test_introductions_are_recorded_once(store):
+    store.introduce("key-2", "key-1", "first")
+    store.introduce("key-2", "key-1", "second")
+    store.introduce("key-1", "key-2", "back")
+    assert sorted((i.by, i.key, i.signature) for i in store.introductions()) == [
+        ("key-1", "key-2", "first"),
+        ("key-2", "key-1", "back"),
+    ]
+
+
 def test_re_adding_a_device_renames_and_restores_it(store):
     device = store.add_device("key-1", "Laptop")
     device.deleted = True
     store._save(device)
-    assert not store.is_trusted("key-1")
+    assert not store.is_trusted("key-1") and store.knows_device("key-1") and not store.knows_device("key-2")
     store.add_device("key-1", "Work laptop")
     assert [(d.name, d.key) for d in store.devices()] == [("Work laptop", "key-1")]
 

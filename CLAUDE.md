@@ -17,8 +17,8 @@ Kanso is a P2P node at its base, in one executable, `kanso`. The node runs as a 
   - `migrations.py`: every change to the table models needs a migration appended to `MIGRATIONS`, written as a per-row data transform (it also upgrades rows synced from older replicas). Never edit a released migration.
   - `sync.py`: raw rows and digests as replicas exchange them; `Store.digest`/`export`/`merge_rows` use it. New synced tables go in `SYNCED_MODELS`.
 - `sync/`: networking, no UI dependencies.
-  - `transport.py`: `Transport` dials and accepts peers by public key; `IrohTransport` for real, `MemoryTransport` for tests. `Channel` carries length-prefixed JSON.
-  - `protocol.py`: one session (hello, digests, rows) and pairing codes. Synced `Device` rows are the trust list.
+  - `transport.py`: `Transport` dials and accepts peers by public key, and signs and verifies with those keys; `IrohTransport` for real, `MemoryTransport` for tests. `Channel` carries length-prefixed JSON.
+  - `protocol.py`: one session (hello, digests, rows), pairing codes and introductions. Synced `Device` rows are the trust list; synced `Introduction` rows are devices' signatures vouching for each other, so a dialer the acceptor doesn't know yet joins when its hello's introductions chain from a trusted device to it (devices paired through one that is offline now still meet). A removed device is never admitted that way.
     Versions: hello and welcome carry each peer's `version()` (`PROTOCOL`, schema) and never change shape; the ALPN never changes either. Peers of the same version always sync fully; otherwise the older one is told to update (`SyncNode.outdated`/`behind`, shown by every interface via `NodeView.update_notes`). So:
     - A change to the session after welcome that the current version can't follow bumps `PROTOCOL`; peers of different protocols stop after welcome. A new optional field doesn't.
     - A change to the synced data, including only to what a field means, how instance ids derive, or how stamps compare and merge, needs a migration (even one leaving rows as they are), so the schema version moves.

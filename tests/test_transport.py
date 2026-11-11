@@ -2,6 +2,7 @@ import asyncio
 import os
 import struct
 
+import iroh
 import pytest
 
 from kanso.sync.transport import MAX_MESSAGE, Channel, IrohTransport, MemoryPipe, MemoryTransport, SyncError
@@ -92,6 +93,28 @@ def test_unknown_or_closed_peer_is_unreachable():
             await b.accept()
 
     run(main())
+
+
+def test_memory_signatures_verify_only_for_their_key_and_data():
+    signature = MemoryTransport("a", {}).sign(b"data")
+    assert MemoryTransport.verify("a", b"data", signature)
+    assert not MemoryTransport.verify("b", b"data", signature)
+    assert not MemoryTransport.verify("a", b"other", signature)
+    assert not MemoryTransport.verify("a", b"data", "garbage")
+
+
+def test_iroh_signatures_verify_only_for_their_key_and_data():
+    secret, other = IrohTransport.new_secret_key(), IrohTransport.new_secret_key()
+    transport = IrohTransport.__new__(IrohTransport)  # signing needs no endpoint
+    transport.secret_key = iroh.SecretKey.from_bytes(secret)
+    signature = transport.sign(b"data")
+    key = IrohTransport.public_key(secret)
+    assert IrohTransport.verify(key, b"data", signature)
+    assert not IrohTransport.verify(IrohTransport.public_key(other), b"data", signature)
+    assert not IrohTransport.verify(key, b"other", signature)
+    for bad in ("garbage", "00", "zz" * 64):
+        assert not IrohTransport.verify(key, b"data", bad)
+    assert not IrohTransport.verify("not a key", b"data", signature)
 
 
 network = pytest.mark.skipif(not os.environ.get("KANSO_NETWORK_TESTS"), reason="needs internet; set KANSO_NETWORK_TESTS=1")

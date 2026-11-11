@@ -1,11 +1,13 @@
 """Authenticated, encrypted byte pipes between nodes identified by public keys.
 
-A `Transport` dials and accepts peers by key and tells who is on the other end; a
-`Channel` carries JSON messages over a pipe, each framed by its 4-byte length.
+A `Transport` dials and accepts peers by key and tells who is on the other end, and signs
+with its key; a `Channel` carries JSON messages over a pipe, each framed by its 4-byte length.
 `IrohTransport` is the real network; `MemoryTransport` connects nodes in one process.
 """
 
 import asyncio
+import hashlib
+import hmac
 import json
 import struct
 from abc import ABC, abstractmethod
@@ -100,6 +102,15 @@ class Transport(ABC):
         """The next incoming channel and the public key the peer proved it holds."""
 
     @abstractmethod
+    def sign(self, data: bytes) -> str:
+        """`data` signed with this node's secret key, as hex."""
+
+    @staticmethod
+    @abstractmethod
+    def verify(key: str, data: bytes, signature: str) -> bool:
+        """Whether `signature` is `data` signed by the node with public key `key`."""
+
+    @abstractmethod
     async def close(self): ...
 
 
@@ -145,6 +156,19 @@ class MemoryTransport(Transport):
         if not (incoming := await self.incoming.get()):
             raise SyncError("Endpoint closed")
         return incoming
+
+    def sign(self, data: bytes) -> str:
+        return self._signature(self.key, data)
+
+    @staticmethod
+    def verify(key: str, data: bytes, signature: str) -> bool:
+        return hmac.compare_digest(MemoryTransport._signature(key, data), signature)
+
+    @staticmethod
+    def _signature(key: str, data: bytes) -> str:
+        """Keyed by the public key, so anyone could sign: for tests only, where a signature
+        by another key still fails."""
+        return hmac.new(hashlib.sha256(f"memory|{key}".encode()).digest(), data, hashlib.sha256).hexdigest()
 
     async def close(self):
         self.network.pop(self.key, None)
@@ -194,15 +218,15 @@ class IrohTransport(Transport):
     """iroh endpoint using n0's discovery and relays, so peers are reachable by key alone,
     behind NATs too; connections are QUIC, authenticated by the keys."""
 
-    def __init__(self, endpoint: iroh.Endpoint):
-        self.endpoint = endpoint
+    def __init__(self, endpoint: iroh.Endpoint, secret_key: bytes):
+        self.endpoint, self.secret_key = endpoint, iroh.SecretKey.from_bytes(secret_key)
         self.key = str(endpoint.id())
 
     @classmethod
     async def start(cls, secret_key: bytes) -> "IrohTransport":
         iroh.iroh_ffi.uniffi_set_event_loop(asyncio.get_running_loop())
         options = iroh.EndpointOptions(preset=iroh.preset_n0(), secret_key=secret_key, alpns=[ALPN])
-        return cls(await iroh.Endpoint.bind(options))
+        return cls(await iroh.Endpoint.bind(options), secret_key)
 
     @staticmethod
     def new_secret_key() -> bytes:
@@ -211,6 +235,17 @@ class IrohTransport(Transport):
     @staticmethod
     def public_key(secret_key: bytes) -> str:
         return str(iroh.SecretKey.from_bytes(secret_key).public())
+
+    def sign(self, data: bytes) -> str:
+        return self.secret_key.sign(data).to_bytes().hex()
+
+    @staticmethod
+    def verify(key: str, data: bytes, signature: str) -> bool:
+        try:
+            iroh.EndpointId.from_string(key).verify(data, iroh.Signature.from_bytes(bytes.fromhex(signature)))
+        except (iroh.IrohError, ValueError):
+            return False
+        return True
 
     async def connect(self, key: str) -> Channel:
         try:

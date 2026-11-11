@@ -41,6 +41,7 @@ class SyncNode:
     async def run(self):
         """Serve and sync until the transport closes; returns once no session is left running."""
         self.store.add_device(self.transport.key, self.name)
+        protocol.introduce_all(self.store, self.transport)
         syncing = asyncio.create_task(self.keep_synced())
         try:
             await self.serve()
@@ -62,7 +63,7 @@ class SyncNode:
 
     async def answer(self, key: str, channel):
         try:
-            result = await protocol.answer(self.store, channel, key, self.transport.key, self.name)
+            result = await protocol.answer(self.store, channel, key, self.transport, self.name)
             self.online.add(key)
             self.report(key, result)
         except SyncError as error:
@@ -84,6 +85,7 @@ class SyncNode:
 
     async def sync_all(self):
         """One session with each other device of the network, all at once."""
+        protocol.introduce_all(self.store, self.transport)
         self.synced_change = self.store.last_change()
         peers = [d.key for d in self.store.devices() if d.key != self.transport.key]
         results = await asyncio.gather(*(self.dial(key) for key in peers), return_exceptions=True)

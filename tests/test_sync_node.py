@@ -124,6 +124,71 @@ def test_a_node_pulls_changes_made_while_it_was_offline(make):
     asyncio.run(main())
 
 
+def restart(*nodes: SyncNode):
+    """Give stopped nodes a new transport with their key, as starting kanso again does."""
+    for n in nodes:
+        n.transport = MemoryTransport(n.transport.key, n.transport.network)
+
+
+def test_devices_paired_through_an_offline_one_sync(make):
+    """a paired with b; while a was away b paired with c, then went away too."""
+    a, b, c = make("a"), make("b"), make("c")
+
+    async def main():
+        await running(a, b)
+        await a.pair(b.transport.key, new_code(b.store))
+        await stop(a)
+        await running(c)
+        await c.pair(b.transport.key, new_code(b.store))
+        await stop(b)
+        restart(a)
+        await running(a)
+        add_todo(c, "from c")
+        await eventually(lambda: texts(a) == ["from c"])
+        assert a.store.is_trusted("key-c")
+        add_todo(a, "from a")
+        await eventually(lambda: texts(c) == ["from a", "from c"])
+        await stop(a, c)
+
+    asyncio.run(main())
+
+
+def test_introductions_chain_through_several_offline_devices(make):
+    """a–b; then b–d and d–c while a was away; only a and c are left online."""
+    a, b, c, d = make("a"), make("b"), make("c"), make("d")
+
+    async def main():
+        await running(a, b)
+        await a.pair(b.transport.key, new_code(b.store))
+        await stop(a)
+        await running(d)
+        await d.pair(b.transport.key, new_code(b.store))
+        await stop(b)
+        await running(c)
+        await c.pair(d.transport.key, new_code(d.store))
+        await stop(d)
+        restart(a)
+        await running(a)
+        add_todo(c, "from c")
+        await eventually(lambda: texts(a) == ["from c"])
+        assert a.store.is_trusted("key-c") and a.store.is_trusted("key-d")
+        await stop(a, c)
+
+    asyncio.run(main())
+
+
+def test_nodes_introduce_devices_they_learned_before_introductions(make):
+    a = make("a")
+    a.store.add_device("key-b", "b")  # paired by an older kanso, which made no introductions
+
+    async def main():
+        await running(a)
+        assert [(i.by, i.key) for i in a.store.introductions()] == [("key-a", "key-b")]
+        await stop(a)
+
+    asyncio.run(main())
+
+
 def test_failed_pairing_raises_and_the_node_keeps_serving(make):
     a, b, c = make("a"), make("b"), make("c")
 
