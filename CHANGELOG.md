@@ -3,6 +3,10 @@
 Versions follow [semantic versioning](https://semver.org), as kept in `CLAUDE.md`: a new
 data schema or sync protocol is a minor version while kanso is 0.x.
 
+## 0.2.1
+
+- The Telegram bot is gone, with `kanso telegram-bot`.
+
 ## 0.2.0
 
 - Devices paired through one that is offline now sync with each other: devices vouch for

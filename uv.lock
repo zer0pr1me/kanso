@@ -351,10 +351,9 @@ wheels = [
 
 [[package]]
 name = "kanso"
-version = "0.2.0"
+version = "0.2.1"
 source = { editable = "." }
 dependencies = [
-    { name = "aiohttp" },
     { name = "iroh" },
     { name = "platformdirs" },
     { name = "sqlmodel" },
@@ -370,7 +369,6 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aiohttp" },
     { name = "iroh", specifier = ">=1.2.0" },
     { name = "platformdirs" },
     { name = "sqlmodel" },

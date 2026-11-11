@@ -95,6 +95,18 @@ def test_unknown_or_closed_peer_is_unreachable():
     run(main())
 
 
+def test_closing_ends_connections_not_accepted_yet():
+    async def main():
+        network = {}
+        a, b = MemoryTransport("a", network), MemoryTransport("b", network)
+        there = await a.connect("b")
+        await b.close()
+        with pytest.raises(SyncError, match="closed the connection"):
+            await there.receive()
+
+    run(main())
+
+
 def test_memory_signatures_verify_only_for_their_key_and_data():
     signature = MemoryTransport("a", {}).sign(b"data")
     assert MemoryTransport.verify("a", b"data", signature)

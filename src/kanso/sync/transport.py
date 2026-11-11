@@ -171,7 +171,11 @@ class MemoryTransport(Transport):
         return hmac.new(hashlib.sha256(f"memory|{key}".encode()).digest(), data, hashlib.sha256).hexdigest()
 
     async def close(self):
+        """Stop accepting; connections not accepted yet are closed, as an endpoint's are."""
         self.network.pop(self.key, None)
+        while not self.incoming.empty():
+            if waiting := self.incoming.get_nowait():
+                await waiting[1].close()
         await self.incoming.put(None)
 
 
