@@ -6,7 +6,7 @@ Kanso is a P2P node at its base, in one executable, `kanso`. The node runs as a 
 
 - `node.py`: `NodeView` is what interfaces see: store, device key, sync status, `subscribe` for changes from elsewhere, and `pair`. `Node` is the node itself. It owns the store, sync (when its process owns the data dir, via `owner_lock`) and the day rollover (`check_day` spawns each new day's instances). `Node.run` runs the daemon's features, each an `async (node) -> result`, until the first one returns. A feature with settings registers a `Feature` in `Node.features` while it runs: its `status()` (`None` while not configured, so interfaces say nothing of it) reaches interfaces as `NodeView.feature_status`, and `reload()` re-reads its settings after the CLI changed them.
 - `control.py`: the daemon (`serve`, its control feature) and how other processes reach it. It listens on localhost; `daemon.json` holds the port and the token. One JSON request per connection: `watch`, `status`, `pair`, `reload` (a feature) or `stop`. `NodeClient` is the `NodeView` for other processes: the data goes through their own `Store` on the shared database, and status and pairing go through the daemon. `link` starts the daemon if none runs, or falls back to a local `Node` without sync.
-- `__main__.py`: the CLI: `kanso` (the TUI), `kanso start [--foreground]`, `kanso stop`, `kanso status`, `kanso connect [ID CODE]` (pairing without the TUI), `kanso telegram-bot start TOKEN CHAT_ID [--at HH:MM]|stop`, `kanso help [command]` (also `kanso <command> help`). `parser()` builds it. A feature's commands save its settings in the store and `reload` it in the daemon.
+- `__main__.py`: the CLI: `kanso` (the TUI), `kanso start [--foreground]`, `kanso stop`, `kanso status`, `kanso connect [ID CODE]` (pairing without the TUI), `kanso telegram-bot start TOKEN CHAT_ID [--at HH:MM]|stop`, `kanso version` (also `--version`), `kanso help [command]` (also `kanso <command> help`). `parser()` builds it. A feature's commands save its settings in the store and `reload` it in the daemon.
 - `core/`: no UI dependencies; the part every interface (TUI, Telegram bot; future web, mobile) builds on. Shared presentation helpers that need no UI library, such as `order.human_date`, live here too.
   - `store.py`: `Store`, the database and every operation on it. UIs call only this.
     Several processes (the daemon, TUIs) share the database, each with its own `Store`. Every public method is one `operation`: a write-locked transaction that first drops the cached records if another process changed the database since. Keep any new public method that way, and keep the session from holding transactions between operations.
@@ -31,6 +31,16 @@ Kanso is a P2P node at its base, in one executable, `kanso`. The node runs as a 
 How to run the app is documented in `README.md`. Keep it up to date whenever commands, ports, requirements, or setup steps change.
 
 The CLI's help is part of every feature. Each command (added with `command` in `parser()`) gets a one-line help for the command list and a description for its own help, and each flag or argument gets a help. Change them whenever behavior changes, and keep the module docstring (the top-level help) true. `test_every_command_and_flag_has_help` fails on a missing help.
+
+# Versioning
+
+`version` in `pyproject.toml` is kanso's only version; `kanso.__version__` reads it from the installed metadata, and `kanso version`, `--version` and the TUI's header show it. Semver, while kanso is 0.x:
+
+- A new migration or a `PROTOCOL` bump: minor (0.2.0 → 0.3.0).
+- Any other change users notice (UI, CLI, features, fixes): patch (0.2.0 → 0.2.1).
+- Internal-only changes (refactors, tests, docs for developers): none.
+
+Bump once per commit that needs it, to the highest level its changes need; in the same commit, add the version's entry to `CHANGELOG.md` and run `uv lock` (it records the version).
 
 # Code style
 

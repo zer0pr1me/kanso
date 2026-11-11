@@ -19,6 +19,7 @@ uv run kanso start    # just start the daemon, in the background
 uv run kanso stop     # stop it
 uv run kanso status   # whether it runs, and how many devices are online
 uv run kanso telegram-bot start TOKEN CHAT_ID   # see "Telegram bot" below
+uv run kanso version  # kanso's version, and the sync version devices compare
 uv run kanso help     # every command, briefly; `kanso <command> help` for one
 uv run kanso-web      # same UI in the browser on http://localhost:8080
 ```
@@ -68,7 +69,10 @@ both survive. The header, and `kanso status`, show how many devices are online.
 - Devices running different versions of kanso still sync as far as they can: a
   newer one takes the changes of an older one, but not the other way round. The
   older one asks you to update kanso, and the newer one names the devices that
-  need it, in the header and in `kanso status`.
+  need it, in the header and in `kanso status`. `kanso version` shows a
+  device's kanso version and the sync protocol and schema it speaks; the header
+  shows the version too. What changed in each version is in
+  [CHANGELOG.md](CHANGELOG.md).
 
 ## Telegram bot
 

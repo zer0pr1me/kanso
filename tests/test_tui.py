@@ -5,7 +5,7 @@ import pytest
 from textual.widgets import ContentSwitcher, Input, OptionList, Static
 
 from conftest import eventually, notifications, run, serving, sync_over, texts
-from kanso import control
+from kanso import __version__, control
 from kanso import node as kanso_node
 from kanso.control import NodeClient
 from kanso.core.store import NAME_MAX, Store
@@ -257,6 +257,13 @@ def test_habit_day_titles_float_too(store):
 
 
 # Versions
+
+
+def test_the_header_shows_kansos_version(store):
+    async def check(app, pilot):
+        assert app.title == f"kanso {__version__}"
+
+    run(tui(store), check)
 
 
 def test_the_header_and_a_toast_tell_what_needs_an_update(store):

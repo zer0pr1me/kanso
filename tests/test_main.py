@@ -5,16 +5,21 @@ import signal
 import threading
 import time
 
+import tomllib
+from pathlib import Path
+
 import pytest
 
 from conftest import eventually, serving, sync_over
 from kanso import __main__ as cli
+from kanso import __version__
 from kanso import control
 from kanso.core.store import Store
 from kanso.node import Node
 from kanso.sync import node as sync_node
 from kanso.sync.node import SyncNode, device_key, owner_lock
-from kanso.sync.protocol import new_code
+from kanso.core.migrations import current_version
+from kanso.sync.protocol import PROTOCOL, new_code
 from kanso.sync.transport import MemoryTransport, SyncError
 from kanso.telegram import bot as telegram
 
@@ -388,7 +393,7 @@ def test_help_lists_every_command(data_dir, capsys, argv):
     assert not data_dir.exists()  # help opens no store
 
 
-@pytest.mark.parametrize("name", ["start", "stop", "status", "connect", "telegram-bot", "help"])
+@pytest.mark.parametrize("name", ["start", "stop", "status", "connect", "telegram-bot", "version", "help"])
 def test_each_command_explains_itself(data_dir, capsys, name):
     forms = [help_text(capsys, argv) for argv in ([name, "help"], ["help", name], [name, "--help"])]
     assert forms[0] == forms[1] == forms[2]
@@ -434,3 +439,17 @@ def test_every_command_and_flag_has_help():
                     check(sub, f"{prefix} {name}")
 
     check(cli.parser(), "kanso")
+
+
+# Version
+
+
+def test_version_is_pyprojects():
+    pyproject = tomllib.loads((Path(__file__).parents[1] / "pyproject.toml").read_text())
+    assert __version__ == pyproject["project"]["version"]
+
+
+@pytest.mark.parametrize("argv", [["version"], ["--version"]])
+def test_version_tells_kansos_and_the_sync_version(data_dir, capsys, argv):
+    assert help_text(capsys, argv) == f"kanso {__version__} (sync protocol {PROTOCOL}, schema {current_version()})\n"
+    assert not data_dir.exists()  # opens no store

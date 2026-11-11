@@ -3,6 +3,7 @@ from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.widgets import ContentSwitcher, Footer, Header, OptionList, Static
 
+from kanso import __version__
 from kanso.core.models import Scheduled
 from kanso.node import NodeView
 from kanso.tui.dialogs import ConnectDialog
@@ -13,7 +14,7 @@ class KansoApp(App):
     """Lists on the left; on the right the highlighted list's todos (or repeats) above its
     habit days (or habits). `r` switches the focused side between instances and templates."""
 
-    TITLE = "kanso"
+    TITLE = f"kanso {__version__}"
     CSS = """
     #lists { width: 30; }
     #right { width: 1fr; }

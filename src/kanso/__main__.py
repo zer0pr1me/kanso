@@ -10,11 +10,12 @@ import re
 import sys
 from datetime import datetime
 
-from kanso import control
+from kanso import __version__, control
 from kanso.core.store import Store
 from kanso.node import Node
 from kanso.sync import node as sync_node
 from kanso.sync.protocol import CODE_TTL, new_code
+from kanso.sync.protocol import version as sync_version
 from kanso.sync.transport import SyncError
 from kanso.telegram import bot as telegram
 from kanso.tui import app as tui
@@ -127,6 +128,16 @@ async def telegram_bot_stop(store: Store, args) -> str | None:
     print(f"Stopped the {telegram.TITLE}")
 
 
+def version_text() -> str:
+    """This kanso's version, and the sync version peers compare (`protocol.version`)."""
+    protocol, schema = sync_version()
+    return f"kanso {__version__} (sync protocol {protocol}, schema {schema})"
+
+
+def show_version(args):
+    print(version_text())
+
+
 def bot_token(text: str) -> str:
     if not re.fullmatch(r"\d+:[\w-]+", text):
         raise argparse.ArgumentTypeError("not a bot token, which looks like 123456:ABC-DEF…")
@@ -152,6 +163,7 @@ def parser() -> argparse.ArgumentParser:
         **formatting,
     )
     root.set_defaults(command=open_tui)
+    root.add_argument("--version", action="version", version=version_text(), help="show kanso's version, as `kanso version` does")
     commands = root.add_subparsers(title="commands", metavar="<command>")
 
     def command(name: str, run, help: str, description: str) -> argparse.ArgumentParser:
@@ -221,6 +233,13 @@ def parser() -> argparse.ArgumentParser:
     actions.add_parser(
         "stop", help="stop the bot, and forget its settings", description="Stop the Telegram bot, and forget its token and chat."
     ).set_defaults(command=telegram_bot_stop)
+    command(
+        "version",
+        show_version,
+        "show kanso's version",
+        "Show this kanso's version, and the sync protocol and data schema it speaks: devices\n"
+        "sync fully when these match, and the older one is told to update otherwise.",
+    )
     explain = command("help", None, "show this help, or a command's", "Show kanso's help, or that of a command.")
     explain.add_argument("topic", nargs="?", choices=list(commands.choices), metavar="command", help="the command to explain")
     explain.set_defaults(helps={None: root, **commands.choices})
@@ -234,6 +253,9 @@ def main(argv: list[str] | None = None):
     args = parser().parse_args(argv)
     if args.command is None:  # kanso help [command]
         args.helps[args.topic].print_help()
+        return
+    if args.command is show_version:  # needs no store
+        show_version(args)
         return
     store = Store()
     try:
