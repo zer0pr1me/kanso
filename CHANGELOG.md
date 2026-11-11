@@ -3,6 +3,11 @@
 Versions follow [semantic versioning](https://semver.org), as kept in `CLAUDE.md`: a new
 data schema or sync protocol is a minor version while kanso is 0.x.
 
+## 0.2.2
+
+- Moving an item with `J`/`K` (or after a sync) no longer scrolls the TUI's panes, unless
+  the item would go out of view.
+
 ## 0.2.1
 
 - The Telegram bot is gone, with `kanso telegram-bot`.

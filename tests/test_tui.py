@@ -195,6 +195,28 @@ def top_line(app, pane: str = "todos") -> str:
     return app.query_one(f"#{pane}", OptionList).render_line(0).text.strip()
 
 
+def test_moving_a_todo_scrolls_only_to_keep_it_in_view(store):
+    todo_list = store.add_list("Inbox")
+    for n in range(40):
+        store.add_todo(todo_list.id, f"t{n}")
+
+    async def check(app, pilot):
+        pane = app.query_one("#todos", OptionList)
+        await pilot.press("l", "G", *"k" * 5)
+        scrolled = pane.scroll_offset.y
+        assert scrolled > 0 and highlighted(app) == label("t34")
+        await pilot.press("K", "J", "J", "K")  # within view: no scrolling
+        assert highlighted(app) == label("t34") and pane.scroll_offset.y == scrolled
+        await pilot.press("g")
+        bottom = pane.scrollable_content_region.height - 1  # the last line in view
+        await pilot.press(*"j" * (bottom - 1))  # Today's title takes the first line
+        assert pane.scroll_offset.y == 0 and pane._index_to_line[pane.highlighted] == bottom
+        await pilot.press("J")  # just out of view: scrolls by a line
+        assert pane.scroll_offset.y == 1 and pane._index_to_line[pane.highlighted] == bottom + 1
+
+    run(tui(store), check)
+
+
 def test_a_scrolled_off_date_title_floats_over_its_todos(store):
     todo_list = store.add_list("Inbox")
     for n in range(12):

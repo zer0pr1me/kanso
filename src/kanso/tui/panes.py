@@ -61,10 +61,12 @@ class RecordPane[T: Record](VimOptionList):
         return self.records
 
     def show(self, highlight: T | None = None):
-        """Reload, highlighting `highlight` if given and still shown (sync may have deleted it)."""
-        self.records = self.load()
+        """Reload, highlighting `highlight` if given and still shown (sync may have deleted it),
+        keeping the scroll position unless the highlight would be out of view."""
+        self.records, scrolled = self.load(), self.scroll_y
         self.clear_options()
         self.add_options(self.make_options())
+        self.scroll_to(y=scrolled, animate=False, immediate=True)
         if highlight and any(r.id == highlight.id for r in self.shown()):
             self.highlighted = self.get_option_index(str(highlight.id))
 
