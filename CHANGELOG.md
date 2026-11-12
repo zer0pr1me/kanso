@@ -3,6 +3,13 @@
 Versions follow [semantic versioning](https://semver.org), as kept in `CLAUDE.md`: a new
 data schema or sync protocol is a minor version while kanso is 0.x.
 
+## 0.3.1
+
+- `F` in the todos or habits gives that side the whole screen, leaving its neighbour's title
+  to say it's hidden; `F` again brings both back.
+- `?` opens help: the keys of every pane, a page each (arrows or `h`/`l` turn pages),
+  starting at the focused pane's.
+
 ## 0.3.0
 
 - A habit marked, a repeating todo done, or either deleted on one device no longer comes

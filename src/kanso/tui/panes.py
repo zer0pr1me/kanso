@@ -19,7 +19,7 @@ from kanso.core.order import done_before, sections
 from kanso.core.store import NAME_MAX, NotFound, Store
 from kanso.tui.dialogs import ConfirmDialog, RepeatDialog, TextPrompt
 from kanso.tui.format import habit_day_label, human_date, section_title, template_label, todo_label
-from kanso.tui.widgets import LabelSuggester, SectionedOptionList, SectionTitle, VimOptionList, with_layouts
+from kanso.tui.widgets import LabelSuggester, SectionedOptionList, SectionTitle, VimOptionList, layout_alias, with_layouts
 
 
 def successor[T: Record](records: list[T], record: T) -> T | None:
@@ -31,7 +31,7 @@ def successor[T: Record](records: list[T], record: T) -> T | None:
 
 MOVE_BINDINGS = [
     Binding("J,shift+down", "move(1)", "Move", key_display="J/K"),
-    Binding("K,shift+up", "move(-1)", "Move up", show=False),
+    Binding("K,shift+up", "move(-1)", show=False),
 ]
 TOP_TOGGLE = ("r", "app.toggle_templates", "Todos/Repeats")
 BOTTOM_TOGGLE = ("r", "app.toggle_templates", "Days/Habits")
@@ -40,7 +40,8 @@ BOTTOM_TOGGLE = ("r", "app.toggle_templates", "Days/Habits")
 class RecordPane[T: Record](VimOptionList):
     """Records from the store, one option each, with the option id being the record id."""
 
-    BINDINGS = with_layouts([("c", "app.connect", "Connect")])
+    BINDINGS = [*with_layouts([("c", "app.connect", "Connect")]), Binding("question_mark", "app.help", "Help", key_display="?")]
+    """`?` has no copy for the Ukrainian layout: it types `?` too, and its copy would be the comma."""
 
     def __init__(self, store: Store, **options):
         super().__init__(**options)
@@ -167,7 +168,10 @@ class ListsPane(RecordPane[TodoList]):
 class ListContentsPane[T: Record](RecordPane[T]):
     """Records of the list `list_id`, set by the app; none until it is, or once sync deleted it."""
 
-    BINDINGS = with_layouts([Binding("left,h,escape", "app.focus_lists", "Lists", show=False)])
+    BINDINGS = with_layouts([
+        Binding("left,h,escape", "app.focus_lists", "Lists", show=False),
+        Binding("F", "app.fullscreen", "Fullscreen"),
+    ])
 
     def __init__(self, store: Store, **options):
         super().__init__(store, **options)
@@ -458,3 +462,20 @@ class HabitDaysPane(ListContentsPane[HabitDay], SectionedOptionList):
         if habit_day := self.current:
             question = f'Delete "{habit_day.title}" of {human_date(habit_day.day)}?'
             self.delete(habit_day, question, self.store.delete_habit_day)
+
+
+def key_rows(pane: type[RecordPane], display: Callable[[Binding], str]) -> list[tuple[str, str]]:
+    """What `pane`'s keys do, as (keys, description) rows: its own bindings and its bases' (but
+    not Textual's), without the Ukrainian layout's copies; a key bound again by a subclass
+    keeps the subclass's. `display` formats a binding's keys."""
+    bindings = [b for cls in pane.__mro__ if cls.__module__.startswith("kanso") for b in cls.__dict__.get("BINDINGS", [])]
+    aliases = {(b.action, layout_alias(b)) for b in bindings if layout_alias(b)}
+    rows: dict[str, tuple[str, str]] = {}
+    for binding in bindings:
+        if (binding.action, binding.key) not in aliases and binding.description and binding.key not in rows:
+            rows[binding.key] = (display(binding), binding.description)
+    return list(rows.values())
+
+
+HELP_PANES = {"Lists": ListsPane, "Todos": TodosPane, "Repeats": RepeatsPane, "Habit days": HabitDaysPane, "Habits": HabitsPane}
+"""The panes the help describes, by title: a page each."""

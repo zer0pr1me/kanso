@@ -16,7 +16,7 @@ from kanso.sync.protocol import Result, new_code, version
 from kanso.sync.transport import MemoryTransport
 from kanso.tui.app import KansoApp
 from kanso.tui import dialogs
-from kanso.tui.dialogs import ConfirmDialog, ConnectDialog, RepeatDialog, TextPrompt
+from kanso.tui.dialogs import ConfirmDialog, ConnectDialog, HelpDialog, RepeatDialog, TextPrompt
 
 TODAY = date.today()
 TOMORROW = TODAY + timedelta(days=1)
@@ -186,6 +186,67 @@ def test_r_toggles_panes_keeping_focus_side(store, repeating):
         assert app.focused.id == "repeats" and highlighted(app, "repeats") == "x  Daily "
         await pilot.press("r")
         assert switcher.current == "todos" and app.focused.id == "todos"
+
+    run(tui(store), check)
+
+
+@pytest.mark.parametrize(("keys", "hidden", "shown"), [("F", "bottom", "top"), ("bF", "top", "bottom")])
+def test_f_toggles_fullscreen_of_the_focused_side(store, repeating, keys, hidden, shown):
+    async def check(app, pilot):
+        await pilot.press("l")
+        if keys == "bF":  # focus the bottom side: days are there, habits too
+            app.query_one("#days").focus()
+        await pilot.press("F")
+        await pilot.pause()
+        assert not app.query_one(f"#{hidden}").display and app.query_one(f"#{shown}").display
+        assert "hidden" in str(app.query_one(f"#{hidden}-title").render())
+        assert "hidden" not in str(app.query_one(f"#{shown}-title").render())
+        await pilot.press("F")
+        await pilot.pause()
+        assert app.query_one("#top").display and app.query_one("#bottom").display
+        assert "hidden" not in str(app.query_one(f"#{hidden}-title").render())
+
+    run(tui(store), check)
+
+
+def help_text(app) -> tuple[str, str]:
+    return str(app.screen.query_one("#title", Static).render()), str(app.screen.query_one("#rows", Static).render())
+
+
+def test_question_mark_opens_the_keys_of_the_focused_pane_and_pages_turn(store, inbox):
+    async def check(app, pilot):
+        await pilot.press("question_mark")
+        title, rows = help_text(app)
+        assert title == "Lists keys · page 1/5"
+        assert "Quit" in rows and "Connect" in rows and "Help" in rows
+        await pilot.press("right")
+        title, rows = help_text(app)
+        assert title == "Todos keys · page 2/5"
+        for line in ["J/K  ", "Done", "Labels", "#", "+1 day", "Old done", "Lists", "Fullscreen"]:
+            assert line in rows or line.strip() in rows
+        assert "ф" not in rows and "Move up" not in rows
+        await pilot.press("h", "h")
+        assert help_text(app)[0] == "Habits keys · page 5/5"
+        await pilot.press("escape")
+        assert not isinstance(app.screen, HelpDialog)
+        await pilot.press("l", "question_mark")  # opens at the focused pane's page
+        assert help_text(app)[0] == "Todos keys · page 2/5"
+        await pilot.press("question_mark")
+        assert not isinstance(app.screen, HelpDialog)
+
+    run(tui(store), check)
+
+
+def test_help_lists_every_panes_keys(store, inbox):
+    async def check(app, pilot):
+        await pilot.press("question_mark")
+        assert isinstance(app.screen, HelpDialog)
+        pages = {title: dict((d, k) for k, d in rows) for title, rows in app.screen.pages}
+        assert list(pages) == ["Lists", "Todos", "Repeats", "Habit days", "Habits"]
+        assert pages["Habit days"]["Success"] == "space" and pages["Habit days"]["Failure"] == "x"
+        assert pages["Todos"]["+1 day"] == "." and pages["Todos"]["-1 day"] == ","
+        assert pages["Repeats"]["Delete"] == "d" and pages["Habits"]["Days/Habits"] == "r"
+        assert all(d for page in pages.values() for d in page)
 
     run(tui(store), check)
 

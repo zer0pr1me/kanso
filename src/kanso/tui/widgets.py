@@ -23,6 +23,12 @@ UA_LAYOUT = {key_name(us): key_name(ua) for us, ua in zip(US_KEYS, UA_KEYS, stri
 """Key names on the US layout, and what the Ukrainian (ЙЦУКЕН) layout types on the same physical key."""
 
 
+def layout_alias(binding: Binding) -> str:
+    """The keys of `binding` the Ukrainian layout types in their places, comma-separated, if any."""
+    keys = [key.strip() for key in binding.key.split(",")]
+    return ",".join(UA_LAYOUT[key] for key in keys if key in UA_LAYOUT)
+
+
 def with_layouts(bindings: list[BindingType]) -> list[Binding]:
     """`bindings`, plus a copy of each on the keys the Ukrainian layout types in their places,
     hidden from the footer. Terminals send characters, not physical keys, so without the copy
@@ -31,19 +37,18 @@ def with_layouts(bindings: list[BindingType]) -> list[Binding]:
     for binding in bindings:
         binding = binding if isinstance(binding, Binding) else Binding(*binding)
         result.append(binding)
-        keys = [key.strip() for key in binding.key.split(",")]
-        if aliases := [UA_LAYOUT[key] for key in keys if key in UA_LAYOUT]:
-            alias = Binding(",".join(aliases), binding.action, binding.description, show=False, priority=binding.priority)
+        if aliases := layout_alias(binding):
+            alias = Binding(aliases, binding.action, binding.description, show=False, priority=binding.priority)
             result.append(alias)
     return result
 
 
 VIM_BINDINGS = with_layouts(
     [
-        Binding("j", "cursor_down", show=False),
-        Binding("k", "cursor_up", show=False),
-        Binding("g", "first", show=False),
-        Binding("G", "last", show=False),
+        Binding("j", "cursor_down", "Down", show=False),
+        Binding("k", "cursor_up", "Up", show=False),
+        Binding("g", "first", "First", show=False),
+        Binding("G", "last", "Last", show=False),
     ]
 )
 

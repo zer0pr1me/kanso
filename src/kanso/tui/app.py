@@ -1,24 +1,30 @@
+from dataclasses import replace
+
 from textual import on
 from textual.app import App, ComposeResult
+from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.widgets import ContentSwitcher, Footer, Header, OptionList, Static
 
 from kanso import __version__
 from kanso.core.models import Scheduled
 from kanso.node import NodeView
-from kanso.tui.dialogs import ConnectDialog
-from kanso.tui.panes import HabitDaysPane, HabitsPane, ListContentsPane, ListsPane, RepeatsPane, TodosPane
+from kanso.tui.dialogs import ConnectDialog, HelpDialog
+from kanso.tui.panes import HELP_PANES, HabitDaysPane, HabitsPane, ListContentsPane, ListsPane, RepeatsPane, TodosPane, key_rows
 
 
 class KansoApp(App):
     """Lists on the left; on the right the highlighted list's todos (or repeats) above its
-    habit days (or habits). `r` switches the focused side between instances and templates."""
+    habit days (or habits). `r` switches the focused side between instances and templates, `F`
+    gives the focused side the whole right."""
 
     TITLE = f"kanso {__version__}"
     CSS = """
     #lists { width: 30; }
     #right { width: 1fr; }
     #top, #bottom { height: 1fr; }
+    #right.full-top #bottom, #right.full-bottom #top { display: none; }
+    #right.full-top #bottom-title, #right.full-bottom #top-title { color: $text-muted; text-style: italic; }
     .title { width: 1fr; padding: 0 1; text-style: bold; color: $text-accent; background: $accent-muted; }
     #todos > .option-list--option-disabled, #days > .option-list--option-disabled { color: $text-accent; text-style: bold; }
     """
@@ -36,11 +42,11 @@ class KansoApp(App):
         with Horizontal():
             yield ListsPane(self.store, id="lists")
             with Vertical(id="right"):
-                yield Static("TODOS", classes="title")
+                yield Static("TODOS", id="top-title", classes="title")
                 with ContentSwitcher(id="top", initial="todos"):
                     yield TodosPane(self.store, id="todos")
                     yield RepeatsPane(self.store, id="repeats")
-                yield Static("HABITS", classes="title")
+                yield Static("HABITS", id="bottom-title", classes="title")
                 with ContentSwitcher(id="bottom", initial="days"):
                     yield HabitDaysPane(self.store, id="days")
                     yield HabitsPane(self.store, id="habits")
@@ -82,6 +88,17 @@ class KansoApp(App):
 
     def action_connect(self):
         self.push_screen(ConnectDialog(self.node))
+
+    def key_display(self, binding: Binding) -> str:
+        """The keys of `binding`, each as the footer shows it, joined by `/`."""
+        keys = binding.key.split(",")
+        return binding.key_display or "/".join(self.get_key_display(replace(binding, key=key)) for key in keys)
+
+    def action_help(self):
+        """List the keys of every pane, a page each, opening at the focused pane's."""
+        pages = [(title, key_rows(pane, self.key_display)) for title, pane in HELP_PANES.items()]
+        page = next((i for i, pane in enumerate(HELP_PANES.values()) if isinstance(self.focused, pane)), 0)
+        self.push_screen(HelpDialog(pages, page))
 
     def shown_pane(self, switcher_id: str = "top") -> ListContentsPane:
         switcher = self.query_one(f"#{switcher_id}", ContentSwitcher)
@@ -126,6 +143,19 @@ class KansoApp(App):
         pane.show(pane.current)
         if not self.query_one(ListsPane).has_focus:
             self.action_focus_pane(switcher_id)
+
+    def action_fullscreen(self):
+        """Give the focused side the whole right, hiding the other but for its title, which
+        says so; again restores both."""
+        right = self.query_one("#right")
+        if right.has_class("full-top") or right.has_class("full-bottom"):
+            right.remove_class("full-top", "full-bottom")
+        else:
+            bottom = self.query_one("#bottom", ContentSwitcher)
+            right.add_class("full-bottom" if self.focused in bottom.children else "full-top")
+        for side, name in (("top", "TODOS"), ("bottom", "HABITS")):
+            hidden = right.has_class(f"full-{'bottom' if side == 'top' else 'top'}")
+            self.query_one(f"#{side}-title", Static).update(f"{name} · hidden, F shows" if hidden else name)
 
     def show_pane(self, pane_id: str) -> ListContentsPane:
         """Show the pane `pane_id` on its side."""
