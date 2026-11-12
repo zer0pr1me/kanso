@@ -397,3 +397,29 @@ def test_iroh_nodes_pair_and_sync(tmp_path):
     asyncio.run(main())
     a.close()
     b.close()
+
+
+def test_habit_marks_from_another_process_reach_paired_devices(make):
+    """A TUI marks through its own store on the daemon's database; the daemon sends it on."""
+    from datetime import date, timedelta
+
+    a, b = make("a"), make("b")
+    tui = Store(a.store.path)
+
+    async def main():
+        await running(a, b)
+        await a.pair(b.transport.key, new_code(b.store))
+        habit = tui.add_habit(tui.add_list("Inbox").id, "Read")
+        habit.start = date.today() - timedelta(days=1)
+        tui._save(habit)
+        tui.spawn()
+        await eventually(lambda: len(b.store.lists()) == 1 and len(b.store.habit_days(habit.list_id)) == 2)
+        for state in ("success", "failure", None):
+            tui.mark_habit_day(tui.habit_days(habit.list_id)[-1].id, state)
+            await eventually(lambda: b.store.habit_days(habit.list_id)[-1].state == state)
+        await stop(a, b)
+
+    try:
+        asyncio.run(main())
+    finally:
+        tui.close()

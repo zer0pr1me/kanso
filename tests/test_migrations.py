@@ -215,3 +215,8 @@ def test_upgrades_database_from_schema_0(path, caplog):
     assert [t.text for t in store.todos(inbox.id)] == ["a", "b"]
     store.close()
     assert stored_version(path) == str(current_version())
+
+
+def test_upgrade_to_older_spawn_stamps_changes_no_rows():
+    rows = {"habitday": [{"id": "d"}]}
+    assert migrations.stamp_spawns_older(rows) == rows

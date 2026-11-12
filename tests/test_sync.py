@@ -192,3 +192,84 @@ def test_habits_and_their_days_converge(stores):
     for store in (a, b):
         assert [(d.title, d.state) for d in store.habit_days(habit.list_id)] == [("Read more", None), ("Read more", "success")]
     assert a.digest() == b.digest()
+
+
+YESTERDAY = date.today() - timedelta(days=1)
+
+
+def habit_from_yesterday(a: Store, b: Store):
+    """A habit started yesterday that both replicas know, but whose yesterday neither spawned yet."""
+    habit = a.add_habit(a.add_list("Inbox").id, "Read")
+    habit.start = YESTERDAY
+    a._save(habit)
+    sync(a, b)
+    return habit
+
+
+def states(store: Store, list_id) -> list:
+    return [(d.day, d.state) for d in store.habit_days(list_id)]
+
+
+@pytest.mark.parametrize("state", ["success", "failure", None])
+def test_habit_marks_reach_the_other_replica(stores, state):
+    a, b = stores
+    habit = habit_from_yesterday(a, b)
+    a.spawn()
+    sync(a, b)
+    day = a.habit_days(habit.list_id)[-1]
+    a.mark_habit_day(day.id, "failure" if state is None else "success")
+    sync(a, b)
+    b.mark_habit_day(day.id, state)
+    assert sync(a, b) == (int(state != "success"), 0)
+    for store in (a, b):
+        assert states(store, habit.list_id) == [(date.today(), None), (YESTERDAY, state)]
+
+
+def test_a_habit_day_spawned_late_keeps_the_mark_made_elsewhere(stores):
+    """b spawns yesterday's day only after a marked it, as when b was off: b's copy is newer
+    in every field, its unchecked `state` too, yet it must not undo a's mark."""
+    a, b = stores
+    habit = habit_from_yesterday(a, b)
+    a.spawn()
+    a.mark_habit_day(a.habit_days(habit.list_id)[-1].id, "success")
+    b.spawn()
+    sync(a, b)
+    for store in (a, b):
+        assert states(store, habit.list_id) == [(date.today(), None), (YESTERDAY, "success")]
+
+
+def test_a_repeating_todo_spawned_late_keeps_being_done_elsewhere(stores):
+    a, b = stores
+    inbox = a.add_list("Inbox")
+    a.add_repeat(inbox.id, "water")
+    sync(a, b)
+    [todo] = a.spawn(TOMORROW)
+    a.update_todo(todo.id, done=True)
+    b.spawn(TOMORROW)
+    sync(a, b)
+    for store in (a, b):
+        assert [(t.scheduled_at, t.done) for t in store.todos(inbox.id)] == [(date.today(), False), (TOMORROW, True)]
+
+
+def test_a_habit_day_spawned_late_stays_deleted_if_deleted_elsewhere(stores):
+    a, b = stores
+    habit = habit_from_yesterday(a, b)
+    a.spawn()
+    a.delete_habit_day(a.habit_days(habit.list_id)[-1].id)
+    b.spawn()
+    sync(a, b)
+    for store in (a, b):
+        assert states(store, habit.list_id) == [(date.today(), None)]
+
+
+def test_an_edit_made_after_a_late_spawn_still_wins(stores):
+    a, b = stores
+    habit = habit_from_yesterday(a, b)
+    a.spawn()
+    a.mark_habit_day(a.habit_days(habit.list_id)[-1].id, "success")
+    b.spawn()
+    b.mark_habit_day(b.habit_days(habit.list_id)[-1].id, "failure")
+    sync(a, b)
+    for store in (a, b):
+        assert states(store, habit.list_id) == [(date.today(), None), (YESTERDAY, "failure")]
+    assert a.digest() == b.digest()

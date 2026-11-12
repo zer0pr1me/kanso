@@ -6,7 +6,7 @@ from sqlmodel import select
 
 from conftest import texts
 from kanso.core import store as store_module
-from kanso.core.models import SYNCED_MODELS, Habit, HabitDay, Repeat, Todo, TodoList, device_id
+from kanso.core.models import SPAWNED, SYNCED_MODELS, Habit, HabitDay, Repeat, Todo, TodoList, device_id
 from kanso.core.store import NotFound, Store
 
 # Setup
@@ -77,11 +77,23 @@ def test_every_write_stamps_monotonically(store, todo_list):
 
 
 def test_new_records_stamp_every_field_at_once(store, todo_list):
-    repeat = store.add_repeat(todo_list.id, "r")
-    [todo] = store.todos(todo_list.id)
-    for record in (todo_list, repeat, todo):
+    todo = store.add_todo(todo_list.id, "a")
+    for record in (todo_list, store.add_repeat(todo_list.id, "r"), store.add_habit(todo_list.id, "h"), todo):
         fields = record.model_dump().keys() - {"id", "modified_at", "stamps"}
         assert record.stamps == dict.fromkeys(fields, record.modified_at)
+
+
+def test_spawned_instances_are_stamped_older_than_any_write_but_where_they_differ(store, todo_list):
+    store.add_repeat(todo_list.id, "r")
+    store.add_habit(todo_list.id, "h")
+    [todo], [day] = store.todos(todo_list.id), store.habit_days(todo_list.id)
+    for record in (todo, day):
+        fields = record.model_dump().keys() - {"id", "modified_at", "stamps"}
+        local = {"text", "position", "created_at"} & fields
+        assert record.stamps == dict.fromkeys(fields - local, SPAWNED) | dict.fromkeys(local, record.modified_at)
+        assert record.modified_at > todo_list.modified_at > SPAWNED
+    store.update_todo(todo.id, done=True)
+    assert todo.stamps["done"] == todo.stamps["completed_at"] == todo.modified_at
 
 
 def test_updates_stamp_only_changed_fields(store, todo_list):

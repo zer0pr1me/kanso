@@ -123,3 +123,12 @@ SYNCED_MODELS = (TodoList, Repeat, Habit, Todo, HabitDay, Device, Introduction)
 
 UNSTAMPED = {"id", "modified_at", "stamps"}
 """Fields without a stamp of their own: the immutable id, and the stamps themselves."""
+
+SPAWNED = f"{0:015d}-{0:06d}-spawned"
+"""The stamp of a spawned instance's fields that every replica spawns alike: older than any
+write, so a replica spawning an instance after another edited it (marked, done, deleted)
+never undoes that edit, and two replicas' spawns of it agree."""
+
+SPAWNED_LOCALLY = {"text", "position", "created_at"}
+"""A spawned instance's fields that depend on when and where it spawned, so they're stamped
+as written: equal stamps must mean equal values."""

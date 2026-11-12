@@ -3,6 +3,13 @@
 Versions follow [semantic versioning](https://semver.org), as kept in `CLAUDE.md`: a new
 data schema or sync protocol is a minor version while kanso is 0.x.
 
+## 0.3.0
+
+- A habit marked, a repeating todo done, or either deleted on one device no longer comes
+  back unchecked when another device, off at the time, spawns that day later: spawned days
+  and todos now yield to any change made to them elsewhere. A new data schema: update every
+  device; devices still on 0.2 are told to.
+
 ## 0.2.3
 
 - Opening kanso, or `kanso start`, restarts a daemon running another kanso (an older one

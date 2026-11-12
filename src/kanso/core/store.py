@@ -18,6 +18,8 @@ from kanso.core.clock import Clock
 from kanso.core.merge import merge
 from kanso.core.migrations import Rows, migrate, upgrade
 from kanso.core.models import (
+    SPAWNED,
+    SPAWNED_LOCALLY,
     SYNCED_MODELS,
     UNSTAMPED,
     Device,
@@ -216,12 +218,16 @@ class Store:
             self.db.merge(Meta(key=key, value=value))
         self.db.commit()
 
-    def _save[T: Record](self, *records: T) -> T:
-        """Stamp each record's changed fields with one new stamp and commit; unchanged records aren't written."""
+    def _save[T: Record](self, *records: T, spawned: bool = False) -> T:
+        """Stamp each record's changed fields with one new stamp and commit; unchanged records
+        aren't written. New `spawned` instances get `SPAWNED` but in `SPAWNED_LOCALLY`."""
         stamp = self.clock.now()
         for record in records:
             if changed := changed_fields(record):
-                record.stamps = {**record.stamps, **dict.fromkeys(changed, stamp)}
+                stamps = dict.fromkeys(changed, stamp)
+                if spawned:
+                    stamps |= dict.fromkeys(changed - SPAWNED_LOCALLY, SPAWNED)
+                record.stamps = {**record.stamps, **stamps}
                 record.modified_at = stamp
                 self.db.add(record)
         self.db.commit()
@@ -391,7 +397,8 @@ class Store:
     def spawn(self, day: date | None = None) -> list[Todo | HabitDay]:
         """Spawn what's due by `day` (default today): each repeat's todo for `day`, and each
         habit's days since its start. Spawned ids derive from the template and day, so replicas
-        spawning the same one agree on it, and a deleted one is never spawned again."""
+        spawning the same one agree on it, and a deleted one is never spawned again; their
+        fields are stamped `SPAWNED`, so an edit made elsewhere before always wins."""
         day = day or date.today()
         templates = [*self._live(Repeat), *self._live(Habit)]
         return [spawned for template in templates for spawned in self._spawn(template, day)]
@@ -410,9 +417,11 @@ class Store:
             fields = dict(id=id, list_id=template.list_id, text=template.text)
             if model is Todo:
                 pos = self._position_at(self.todos(template.list_id), None)
-                spawned.append(self._save(Todo(**fields, repeat_id=template.id, position=pos, scheduled_at=due)))
+                todo = Todo(**fields, repeat_id=template.id, position=pos, scheduled_at=due)
+                spawned.append(self._save(todo, spawned=True))
             else:
-                spawned.append(self._save(HabitDay(**fields, habit_id=template.id, position=template.position, day=due)))
+                habit_day = HabitDay(**fields, habit_id=template.id, position=template.position, day=due)
+                spawned.append(self._save(habit_day, spawned=True))
         return spawned
 
     # Repeats

@@ -54,6 +54,12 @@ def add_introductions(rows: Rows) -> Rows:
     return rows
 
 
+def stamp_spawns_older(rows: Rows) -> Rows:
+    """Spawned instances are now stamped `models.SPAWNED`, older than any write, where they
+    were stamped when spawned; rows spawned before keep their stamps."""
+    return rows
+
+
 MIGRATIONS: list[Callable[[Rows], Rows]] = [
     add_todo_labels,
     add_todo_repeat_id,
@@ -61,6 +67,7 @@ MIGRATIONS: list[Callable[[Rows], Rows]] = [
     add_devices,
     add_habits,
     add_introductions,
+    stamp_spawns_older,
 ]
 
 VERSION_KEY = "schema_version"
