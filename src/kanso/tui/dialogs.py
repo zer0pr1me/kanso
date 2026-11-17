@@ -9,7 +9,7 @@ from collections.abc import Callable
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
+from textual.containers import Vertical, VerticalScroll
 from textual.content import Content
 from textual.screen import ModalScreen
 from textual.widgets import ContentSwitcher, Input, RadioButton, RadioSet, Static
@@ -152,6 +152,51 @@ class ConfirmDialog(ModalScreen[bool]):
 
     def action_answer(self, yes: bool):
         self.dismiss(yes)
+
+
+class HelpDialog(ModalScreen[None]):
+    """The keys, a page per pane, starting at page `page`; the page scrolls if it doesn't fit."""
+
+    BINDINGS = with_layouts([
+        Binding("escape,q", "dismiss", "Close"),
+        Binding("right,l,tab,space", "turn(1)", "Next page"),
+        Binding("left,h,shift+tab", "turn(-1)", "Previous page"),
+        Binding("j,down", "scroll(1)", "Down"),
+        Binding("k,up", "scroll(-1)", "Up"),
+    ]) + [Binding("question_mark", "dismiss", "Close")]
+    CSS = """
+    HelpDialog { align: center middle; }
+    HelpDialog > Vertical { width: 60; height: auto; max-height: 90%; border: round $accent; background: $surface; padding: 0 1; }
+    HelpDialog VerticalScroll { height: auto; max-height: 100%; }
+    HelpDialog .title { text-style: bold; color: $text-accent; }
+    HelpDialog .keys { color: $text-muted; margin-top: 1; }
+    """
+
+    def __init__(self, pages: list[tuple[str, list[tuple[str, str]]]], page: int = 0):
+        """`pages` are (title, (keys, description) rows)."""
+        super().__init__()
+        self.pages, self.page = pages, page
+
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Static(id="title", classes="title")
+            with VerticalScroll():
+                yield Static(id="rows")
+            yield Static("←/→: page · ↑/↓: scroll · ? or escape: close", classes="keys")
+
+    def on_mount(self):
+        self.action_turn(0)
+
+    def action_turn(self, step: int):
+        self.page = (self.page + step) % len(self.pages)
+        title, rows = self.pages[self.page]
+        width = max(len(keys) for keys, _ in rows)
+        self.query_one("#title", Static).update(Content(f"{title} keys · page {self.page + 1}/{len(self.pages)}"))
+        self.query_one("#rows", Static).update(Content("\n").join(Content.assemble((f"{keys:<{width}}", "bold"), f"  {text}") for keys, text in rows))
+        self.query_one(VerticalScroll).scroll_home(animate=False)
+
+    def action_scroll(self, step: int):
+        self.query_one(VerticalScroll).scroll_relative(y=step, animate=False)
 
 
 def clipboard_command() -> list[str] | None:

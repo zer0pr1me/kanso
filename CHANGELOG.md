@@ -3,12 +3,19 @@
 Versions follow [semantic versioning](https://semver.org), as kept in `CLAUDE.md`: a new
 data schema or sync protocol is a minor version while kanso is 0.x.
 
-## 0.3.1
+## 0.3.2
 
 - Habit statistics: `s` on the habit days or the habits shows every list's habits as a
   grid of the last weeks, a column per day marked ✓, ✗ or · (unchecked), with each
   habit's current streak and its success rate over the weeks shown. `h` and `l` page a
-  week back and forth; escape goes back.
+  week back and forth; escape goes back. The help has a page for it.
+
+## 0.3.1
+
+- `F` in the todos or habits gives that side the whole screen, leaving its neighbour's title
+  to say it's hidden; `F` again brings both back.
+- `?` opens help: the keys of every pane, a page each (arrows or `h`/`l` turn pages),
+  starting at the focused pane's.
 
 ## 0.3.0
 

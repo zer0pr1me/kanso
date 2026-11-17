@@ -15,14 +15,14 @@ from kanso.tui.widgets import with_layouts
 
 class HabitStats(Screen):
     """Every habit's marks over the last weeks, by list, with its streak and success rate
-    (`format.habit_grid`); `h`/`l` page a week earlier or later. Redraws on changes from
-    elsewhere and on resizing."""
+    (`format.habit_grid`); `h`/`l` page a week earlier or later, `?` opens the help.
+    Redraws on changes from elsewhere and on resizing."""
 
     BINDINGS = with_layouts([
         Binding("h,left", "page(1)", "Earlier", key_display="h/l"),
         Binding("l,right", "page(-1)", "Later", show=False),
         Binding("escape,q,s", "app.pop_screen", "Back"),
-    ])
+    ]) + [Binding("question_mark", "app.help", "Help", key_display="?")]
     CSS = "HabitStats #grid { padding: 1 2; }"
 
     def __init__(self, node: NodeView):
