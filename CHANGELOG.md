@@ -3,6 +3,13 @@
 Versions follow [semantic versioning](https://semver.org), as kept in `CLAUDE.md`: a new
 data schema or sync protocol is a minor version while kanso is 0.x.
 
+## 0.3.1
+
+- Habit statistics: `s` on the habit days or the habits shows every list's habits as a
+  grid of the last weeks, a column per day marked ✓, ✗ or · (unchecked), with each
+  habit's current streak and its success rate over the weeks shown. `h` and `l` page a
+  week back and forth; escape goes back.
+
 ## 0.3.0
 
 - A habit marked, a repeating todo done, or either deleted on one device no longer comes

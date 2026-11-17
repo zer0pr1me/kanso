@@ -1,11 +1,11 @@
 import asyncio
-from datetime import date
+from datetime import date, timedelta
 from uuid import uuid4
 
 import pytest
 from textual.binding import Binding
 
-from kanso.core.models import Habit, HabitDay, Repeat, Todo
+from kanso.core.models import Habit, HabitDay, Repeat, Todo, TodoList
 from kanso.core.repeats import clean_rule
 from kanso.tui.format import (
     HABIT_MARKS,
@@ -13,6 +13,7 @@ from kanso.tui.format import (
     RULE_STYLE,
     describe_rule,
     habit_day_label,
+    habit_grid,
     human_date,
     section_title,
     template_label,
@@ -163,3 +164,62 @@ def test_with_layouts_adds_hidden_ukrainian_copies():
     assert with_layouts([original])[1] == Binding("О", "move(1)", "Move", show=False)
     assert [(b.key, b.show) for b in with_layouts([("space", "toggle", "Done")])] == [("space", True)]
     assert [b.key for b in with_layouts([Binding("enter, y", "yes")])] == ["enter, y", "н"]
+
+
+# The habit grid
+
+
+def grid_habit(todo_list: TodoList, text: str, marks: dict[int, str | None]) -> tuple:
+    """A `Store.habit_history` entry: a habit with a day `n` days before `WEDNESDAY` per `marks`."""
+    habit = Habit(list_id=todo_list.id, text=text, position="a")
+    days = [
+        HabitDay(list_id=todo_list.id, habit_id=habit.id, text=text, day=WEDNESDAY - timedelta(days=n), state=state, position="a")
+        for n, state in sorted(marks.items())
+    ]
+    return (todo_list, habit, days)
+
+
+@pytest.fixture
+def history():
+    inbox, work = TodoList(name="Inbox", position="a"), TodoList(name="Work", position="b")
+    return [
+        grid_habit(inbox, "Read", {0: None, 1: "success", 2: "success", 3: "failure", 9: "success"}),
+        grid_habit(inbox, "Run", {1: None, 3: "success"}),  # every other day
+        grid_habit(work, "A habit much too long to fit", {0: None}),
+    ]
+
+
+def test_habit_grid_shows_whole_weeks_up_to_this_one_with_streaks_and_rates(history):
+    grid = habit_grid(history, WEDNESDAY, 3 + 24 + 2 * 14 + 14 + 13)  # 2 weeks fit, not 3
+    assert grid.plain.split("\n") == [
+        " " * 27 + "Oct 12        Oct 19",
+        " " * 27 + "M T W T F S S M T W T F S S   Streak  Rate",
+        "Inbox",
+        "  Read".ljust(27) + "✓ " + "  " * 5 + "✗ ✓ ✓ · " + "  " * 4 + "       2   75%",
+        "  Run".ljust(27) + "  " * 6 + "✓   · " + "  " * 5 + "       1  100%",  # yesterday not marked yet
+        "Work",
+        "  A habit much too long t… " + "  " * 9 + "· " + "  " * 4 + "       0     —",
+        "",
+        "✓ success   ✗ failure   · unchecked",
+    ]
+
+
+def test_habit_grid_styles_marks_and_today(history):
+    grid = habit_grid(history, WEDNESDAY, 80)
+    lines = grid.split("\n")
+    styles = {line.plain[span.start : span.end]: str(span.style) for line in lines for span in line.spans}
+    assert styles["✓ "] == HABIT_MARKS["success"][1] and styles["✗ "] == HABIT_MARKS["failure"][1]
+    assert styles["· "] == "dim" and styles["W "] == "bold $text-accent"  # only today's letter
+    assert styles["Inbox"] == styles["Work"] == "bold $text-accent"
+
+
+def test_habit_grid_pages_back_by_weeks(history):
+    grid = habit_grid(history, WEDNESDAY, 3 + 24 + 14 + 14, back=1)
+    lines = grid.plain.split("\n")
+    assert lines[0].strip() == "Oct 12"
+    assert lines[3] == "  Read".ljust(27) + "✓ " + "  " * 5 + "✗ " + "       2   50%"  # the rate of the days shown
+
+
+def test_habit_grid_has_at_least_a_week_and_says_when_there_are_no_habits(history):
+    assert habit_grid(history, WEDNESDAY, 10).plain.split("\n")[0].strip() == "Oct 19"
+    assert habit_grid([], WEDNESDAY, 80).plain == "No habits yet"

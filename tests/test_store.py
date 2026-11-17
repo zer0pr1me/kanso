@@ -788,6 +788,26 @@ def test_habit_days_of_a_list_never_received_are_hidden(store):
     assert store._live(HabitDay) == []
 
 
+def test_habit_history_has_every_live_habit_by_list_with_its_days_newest_first(store, todo_list):
+    work, gone = store.add_list("Work"), store.add_list("Gone")
+    started_days_ago(store, work, "w", 0)
+    for text, days in [("b", 2), ("a", 1), ("deleted", 1)]:
+        started_days_ago(store, todo_list, text, days)
+    b, a, deleted = store.habits(todo_list.id)
+    store.move_habit(a.id, 0)
+    store.delete_habit(deleted.id)
+    started_days_ago(store, gone, "g", 1)
+    store.delete_list(gone.id)
+    history = [(l.name, h.text, [(TODAY - d.day).days for d in days]) for l, h, days in store.habit_history()]
+    assert history == [("Inbox", "a", [0, 1]), ("Inbox", "b", [0, 1, 2]), ("Work", "w", [0])]
+
+
+def test_habit_history_leaves_out_deleted_days(store, todo_list):
+    oldest = started_days_ago(store, todo_list, "h", 1)
+    store.delete_habit_day(oldest.id)
+    [(_, _, days)] = store.habit_history()
+    assert [d.day for d in days] == [TODAY]
+
 
 # Several processes on one database, each with its own store
 

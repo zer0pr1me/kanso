@@ -1,6 +1,7 @@
 from textual import on
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
+from textual.screen import Screen
 from textual.widgets import ContentSwitcher, Footer, Header, OptionList, Static
 
 from kanso import __version__
@@ -8,6 +9,7 @@ from kanso.core.models import Scheduled
 from kanso.node import NodeView
 from kanso.tui.dialogs import ConnectDialog
 from kanso.tui.panes import HabitDaysPane, HabitsPane, ListContentsPane, ListsPane, RepeatsPane, TodosPane
+from kanso.tui.stats import HabitStats
 
 
 class KansoApp(App):
@@ -46,6 +48,11 @@ class KansoApp(App):
                     yield HabitsPane(self.store, id="habits")
         yield Footer()
 
+    @property
+    def main(self) -> Screen:
+        """The panes' screen, which redraws on changes even while another screen is on top."""
+        return self.screen_stack[0]
+
     def on_mount(self):
         self.query_one(ListsPane).show()
         self.unsubscribe = self.node.subscribe(self.node_updated)
@@ -70,7 +77,7 @@ class KansoApp(App):
             self.notify(note, severity="warning", timeout=10)
         self.told = set(node.update_notes())
         if changed:
-            lists = self.query_one(ListsPane)
+            lists = self.main.query_one(ListsPane)
             lists.show(lists.current)
             self.redraw_shown()
 
@@ -83,8 +90,11 @@ class KansoApp(App):
     def action_connect(self):
         self.push_screen(ConnectDialog(self.node))
 
+    def action_habit_stats(self):
+        self.push_screen(HabitStats(self.node))
+
     def shown_pane(self, switcher_id: str = "top") -> ListContentsPane:
-        switcher = self.query_one(f"#{switcher_id}", ContentSwitcher)
+        switcher = self.main.query_one(f"#{switcher_id}", ContentSwitcher)
         return switcher.get_child_by_id(switcher.current, ListContentsPane)
 
     @on(OptionList.OptionHighlighted, "#lists")
@@ -94,8 +104,8 @@ class KansoApp(App):
         (redrawn), keep their highlights."""
         if not self.is_running:  # a redraw's message, arriving while shutting down
             return
-        list_id = (current := self.query_one(ListsPane).current) and current.id
-        for pane in self.query(ListContentsPane):
+        list_id = (current := self.main.query_one(ListsPane).current) and current.id
+        for pane in self.main.query(ListContentsPane):
             same = pane.list_id == list_id
             pane.list_id = list_id
             pane.show(pane.current if same else None)

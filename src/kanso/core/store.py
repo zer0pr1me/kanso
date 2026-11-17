@@ -480,6 +480,14 @@ class Store:
         days = self._in_list(HabitDay, list_id)
         return sorted(days, key=lambda d: (-d.day.toordinal(), order.get(d.habit_id, d.position), str(d.id)))
 
+    def habit_history(self) -> list[tuple[TodoList, Habit, list[HabitDay]]]:
+        """Every live habit with its list, in the lists' order and then its list's, and its
+        days, newest first."""
+        days: dict[UUID, list[HabitDay]] = {}
+        for habit_day in sorted(self._live(HabitDay), key=lambda d: d.day, reverse=True):
+            days.setdefault(habit_day.habit_id, []).append(habit_day)
+        return [(l, h, days.get(h.id, [])) for l in self.lists() for h in self.habits(l.id)]
+
     def mark_habit_day(self, day_id: UUID, state: str | None) -> HabitDay:
         """Mark a day that's over a `"success"` or `"failure"`, or unchecked again with `None`."""
         if state not in HABIT_STATES:

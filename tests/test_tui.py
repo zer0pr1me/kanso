@@ -17,6 +17,7 @@ from kanso.sync.transport import MemoryTransport
 from kanso.tui.app import KansoApp
 from kanso.tui import dialogs
 from kanso.tui.dialogs import ConfirmDialog, ConnectDialog, RepeatDialog, TextPrompt
+from kanso.tui.stats import HabitStats
 
 TODAY = date.today()
 TOMORROW = TODAY + timedelta(days=1)
@@ -1200,6 +1201,69 @@ def test_remote_habit_changes_appear(store, habitual, network, remote):
         [run_habit] = [h for h in remote.store.habits(habitual.id) if h.text == "Run"]
         remote.store.update_habit(run_habit.id, text="Jog")
         await eventually(lambda: f"{mark()} Jog" in prompts(app, "days"))
+        await remote.transport.close()
+
+    run(tui(store, sync_over(network)), check)
+
+
+# Habit statistics
+
+
+def grid(app) -> list[str]:
+    return app.screen.query_one("#grid", Static).render().plain.split("\n")
+
+
+@pytest.mark.parametrize("start, back", [("days", "escape"), ("habits", "s"), ("days", "q")])
+def test_s_shows_every_lists_habits_stats_and_goes_back(store, habitual, start, back):
+    work = store.add_list("Work")
+    store.add_habit(work.id, "Gym")
+
+    async def check(app, pilot):
+        focus_day(app, f"{mark()} Read", 1)
+        await pilot.press("space", *(["r"] if start == "habits" else []), "s")
+        assert isinstance(app.screen, HabitStats)
+        rows = grid(app)
+        assert [r.split()[0] for r in rows[2:7]] == ["Inbox", "Read", "Run", "Work", "Gym"]
+        assert rows[3].endswith("1  100%") and rows[1].endswith("Streak  Rate")
+        await pilot.press(back)
+        assert on_main_screen(app) and app.focused.id == start
+
+    run(tui(store), check)
+
+
+def test_stats_page_by_weeks_never_past_this_one(store, habitual):
+    async def check(app, pilot):
+        await pilot.press("l", "tab", "s")
+        first = grid(app)[0]
+        await pilot.press("l")
+        assert grid(app)[0] == first
+        await pilot.press("h")  # every week a week earlier: a new one first, this one gone
+        assert grid(app)[0].split()[2:] == first.split()[:-2]
+        await pilot.press("right")
+        assert grid(app)[0] == first
+
+    run(tui(store), check)
+
+
+def test_s_does_nothing_on_the_lists_and_todos(store, habitual):
+    async def check(app, pilot):
+        await pilot.press("s", "l", "s")
+        assert on_main_screen(app)
+
+    run(tui(store), check)
+
+
+def test_remote_changes_redraw_the_stats_and_the_panes_under_them(store, habitual, network, remote):
+    async def check(app, pilot):
+        asyncio.create_task(remote.run())
+        await app.node.pair("key-b", new_code(remote.store))
+        await eventually(lambda: remote.store.lists())
+        await pilot.press("l", "tab", "s")
+        [run_habit] = [h for h in remote.store.habits(habitual.id) if h.text == "Run"]
+        remote.store.update_habit(run_habit.id, text="Jog")
+        await eventually(lambda: "Jog" in grid(app)[4])
+        await pilot.press("escape")
+        assert f"{mark()} Jog" in prompts(app, "days")
         await remote.transport.close()
 
     run(tui(store, sync_over(network)), check)

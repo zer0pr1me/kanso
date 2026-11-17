@@ -35,6 +35,7 @@ MOVE_BINDINGS = [
 ]
 TOP_TOGGLE = ("r", "app.toggle_templates", "Todos/Repeats")
 BOTTOM_TOGGLE = ("r", "app.toggle_templates", "Days/Habits")
+STATS = ("s", "app.habit_stats", "Stats")
 
 
 class RecordPane[T: Record](VimOptionList):
@@ -362,7 +363,7 @@ class RepeatsPane(TemplatesPane[Repeat]):
 
 
 class HabitsPane(TemplatesPane[Habit]):
-    BINDINGS = with_layouts([BOTTOM_TOGGLE, *TEMPLATE_BINDINGS])
+    BINDINGS = with_layouts([BOTTOM_TOGGLE, *TEMPLATE_BINDINGS, STATS])
     placeholder = "Habit"
 
     def fetch(self, list_id: UUID) -> list[Habit]:
@@ -391,7 +392,8 @@ RECENT_DAYS = 7
 
 class HabitDaysPane(ListContentsPane[HabitDay], SectionedOptionList):
     """Habit days under a title per date, newest first; only the last week's unless `f` shows
-    older ones. A day is marked once it's over: `space` a success, `x` a failure, again clears."""
+    older ones. A day is marked once it's over: `space` a success, `x` a failure, again clears.
+    `s`, here and on the habits, shows every list's habits' statistics."""
 
     BINDINGS = with_layouts([
         BOTTOM_TOGGLE,
@@ -401,6 +403,7 @@ class HabitDaysPane(ListContentsPane[HabitDay], SectionedOptionList):
         ("e", "edit", "Edit habit"),
         ("d", "delete", "Delete"),
         ("f", "toggle_old", "Older days"),
+        STATS,
     ])
 
     def fetch(self, list_id: UUID) -> list[HabitDay]:
