@@ -17,7 +17,7 @@ from kanso.sync.transport import MemoryTransport
 from kanso.tui.app import KansoApp
 from kanso.tui import dialogs
 from kanso.tui.dialogs import ConfirmDialog, ConnectDialog, HelpDialog, RepeatDialog, TextPrompt
-from kanso.tui.stats import HabitStats
+from kanso.tui.stats import HabitStats, RepeatStats
 
 TODAY = date.today()
 TOMORROW = TODAY + timedelta(days=1)
@@ -227,7 +227,7 @@ def test_question_mark_opens_the_keys_of_the_focused_pane_and_pages_turn(store, 
             assert line in rows or line.strip() in rows
         assert "ф" not in rows and "Move up" not in rows
         await pilot.press("h", "h")
-        assert help_text(app)[0] == "Habit stats keys · page 6/6"
+        assert help_text(app)[0] == "Stats keys · page 6/6"
         await pilot.press("h")
         assert help_text(app)[0] == "Habits keys · page 5/6"
         await pilot.press("escape")
@@ -245,12 +245,13 @@ def test_help_lists_every_panes_keys(store, inbox):
         await pilot.press("question_mark")
         assert isinstance(app.screen, HelpDialog)
         pages = {title: dict((d, k) for k, d in rows) for title, rows in app.screen.pages}
-        assert list(pages) == ["Lists", "Todos", "Repeats", "Habit days", "Habits", "Habit stats"]
+        assert list(pages) == ["Lists", "Todos", "Repeats", "Habit days", "Habits", "Stats"]
         assert pages["Habit days"]["Success"] == "space" and pages["Habit days"]["Failure"] == "x"
         assert pages["Todos"]["+1 day"] == "." and pages["Todos"]["-1 day"] == ","
         assert pages["Repeats"]["Delete"] == "d" and pages["Habits"]["Days/Habits"] == "r"
         assert pages["Habit days"]["Stats"] == pages["Habits"]["Stats"] == "s"
-        assert pages["Habit stats"]["Earlier"] == "h/l" and pages["Habit stats"]["Back"] == "esc/q/s"
+        assert pages["Todos"]["Stats"] == pages["Repeats"]["Stats"] == "s"
+        assert pages["Stats"]["Earlier"] == "h/l" and pages["Stats"]["Back"] == "esc/q/s"
         assert all(d for page in pages.values() for d in page)
 
     run(tui(store), check)
@@ -1299,7 +1300,7 @@ def test_s_shows_every_lists_habits_stats_and_goes_back(store, habitual, start, 
 def test_question_mark_on_the_stats_opens_their_help_page(store, habitual):
     async def check(app, pilot):
         await pilot.press("l", "tab", "s", "question_mark")
-        assert help_text(app)[0] == "Habit stats keys · page 6/6"
+        assert help_text(app)[0] == "Stats keys · page 6/6"
         await pilot.press("escape")
         assert isinstance(app.screen, HabitStats)
 
@@ -1320,10 +1321,53 @@ def test_stats_page_by_weeks_never_past_this_one(store, habitual):
     run(tui(store), check)
 
 
-def test_s_does_nothing_on_the_lists_and_todos(store, habitual):
+def test_s_does_nothing_on_the_lists(store, habitual):
     async def check(app, pilot):
-        await pilot.press("s", "l", "s")
+        await pilot.press("s")
         assert on_main_screen(app)
+
+    run(tui(store), check)
+
+
+# Repeating todo statistics
+
+
+def spawned_days_ago(store, repeat, days_ago: int, done: bool = False):
+    """The daily repeat's todo spawned `days_ago` (starting it then), done or not, left on its day."""
+    repeat.start = min(repeat.start, TODAY - timedelta(days=days_ago))
+    store._save(repeat)
+    store.spawn(TODAY - timedelta(days=days_ago))
+    todo = next(t for t in store.todos(repeat.list_id) if t.repeat_id == repeat.id and t.scheduled_at == TODAY - timedelta(days=days_ago))
+    store.update_todo(todo.id, done=done)
+
+
+@pytest.mark.parametrize("start, back", [("todos", "escape"), ("repeats", "s"), ("todos", "q")])
+def test_s_on_the_todos_or_repeats_shows_every_lists_repeating_todos_stats(store, start, back):
+    inbox, work = store.add_list("Inbox"), store.add_list("Work")
+    water = store.add_repeat(inbox.id, "Water")
+    store.update_todo(store.todos(inbox.id)[0].id, done=True)
+    for days_ago, done in [(1, True), (2, False), (3, True)]:
+        spawned_days_ago(store, water, days_ago, done)
+    store.add_repeat(work.id, "Report")
+
+    async def check(app, pilot):
+        await pilot.press("l", *(["r"] if start == "repeats" else []), "s")
+        assert isinstance(app.screen, RepeatStats)
+        rows = grid(app)
+        assert [r.split()[0] for r in rows[2:6]] == ["Inbox", "Water", "Work", "Report"]
+        assert rows[3].endswith("2   75%") and rows[5].endswith("0     —")  # today's done, still to do
+        assert rows[-1] == "✓ done   ✗ missed   · to do"
+        assert str(app.screen.query_one(".title", Static).render()) == "REPEATING TODO STATS"
+        await pilot.press(back)
+        assert on_main_screen(app) and app.focused.id == start
+
+    run(tui(store), check)
+
+
+def test_repeat_stats_say_when_there_are_none(store, inbox):
+    async def check(app, pilot):
+        await pilot.press("l", "s")
+        assert grid(app) == ["No repeating todos yet"]
 
     run(tui(store), check)
 

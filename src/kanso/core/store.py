@@ -36,6 +36,7 @@ from kanso.core.models import (
     introduction_id,
 )
 from kanso.core.repeats import RULE_FIELDS, clean_rule, occurs_on
+from kanso.core.stats import Mark
 from kanso.core.sync import Digest, decode, encode, newest_stamp, stamps_hash
 
 NAME_MAX = 200
@@ -95,6 +96,13 @@ def apply_changes(todo: Todo, changes: dict) -> Todo:
         todo.completed_at = date.today() if changes["done"] else None
     todo.sqlmodel_update(changes)
     return todo
+
+
+def spawned_for(todo: Todo) -> date:
+    """The day a repeating todo was spawned for, which its id derives from: its creation day or
+    its date unless postponed, else its date."""
+    days = (todo.created_at, todo.scheduled_at)
+    return next((d for d in days if d and uuid5(todo.repeat_id, d.isoformat()) == todo.id), todo.scheduled_at or todo.created_at)
 
 
 def clean_name(name: str) -> str:
@@ -445,6 +453,29 @@ class Store:
     def delete_repeat(self, repeat_id: UUID):
         """Tombstone it; the todos it spawned stay."""
         self._delete(Repeat, repeat_id)
+
+    def repeat_history(self) -> list[tuple[TodoList, Repeat, list[Mark]]]:
+        """Every live repeat with its list, in the lists' order and then its list's, and a mark
+        per day of its todos, newest first: each todo it spawned on the day it was spawned for,
+        even if postponed since, a success if done, a failure if deleted or not done by its
+        date; and a failure for each day before today it was due but never spawned (as when no
+        device ran then), from its first todo on."""
+        today, marks, spawned = date.today(), {}, {}
+        for todo in self.db.exec(select(Todo).where(Todo.repeat_id != None)):  # noqa: E711
+            day = spawned_for(todo)
+            spawned.setdefault(todo.repeat_id, set()).add(day)
+            missed = todo.deleted or (todo.scheduled_at or day) < today
+            state = "success" if todo.done else "failure" if missed else None
+            marks.setdefault(todo.repeat_id, []).append(Mark(day, state))
+        history = []
+        for todo_list in self.lists():
+            for repeat in self.repeats(todo_list.id):
+                days = spawned.get(repeat.id, set())
+                first = min(days, default=today)
+                after_first = (first + timedelta(days=n) for n in range((today - first).days))
+                missed = [Mark(d, "failure") for d in after_first if d not in days and occurs_on(repeat, d)]
+                history.append((todo_list, repeat, sorted(marks.get(repeat.id, []) + missed, key=lambda m: m.day, reverse=True)))
+        return history
 
     def repeat_of(self, todo_id: UUID) -> Repeat | None:
         """The live repeat that spawned the todo, if any."""

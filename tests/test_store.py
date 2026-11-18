@@ -809,6 +809,55 @@ def test_habit_history_leaves_out_deleted_days(store, todo_list):
     assert [d.day for d in days] == [TODAY]
 
 
+def test_repeat_history_marks_each_repeats_todos_by_the_day_they_were_for(store, todo_list):
+    work, gone = store.add_list("Work"), store.add_list("Gone")
+    daily, deleted = store.add_repeat(todo_list.id, "daily"), store.add_repeat(todo_list.id, "deleted")
+    store.add_repeat(work.id, "w")
+    store.add_repeat(gone.id, "g")
+    store.delete_list(gone.id)
+    for repeat in store._live(Repeat):
+        repeat.start = TODAY - timedelta(days=4)
+        store._save(repeat)
+    for days_ago in (4, 3, 2, 1):
+        for spawned in store.spawn(TODAY - timedelta(days=days_ago)):
+            spawned.created_at = spawned.scheduled_at  # as when spawned on its day
+            store._save(spawned)
+    store.delete_repeat(deleted.id)
+    store.add_todo(todo_list.id, "not repeating", scheduled_at=TODAY - timedelta(days=5))
+    todo = lambda days_ago: store.db.get(Todo, uuid5(daily.id, (TODAY - timedelta(days=days_ago)).isoformat()))  # noqa: E731
+    store.update_todo(todo(0).id, done=True)
+    store.update_todo(todo(1).id, done=True)
+    store.shift_todo(todo(1).id, -3)  # a done todo moved: still the day it was for
+    store.shift_todo(todo(2).id, 2)  # postponed to today: still to do
+    store.delete_todo(todo(4).id)  # deleted: missed
+    history = [(l.name, r.text, [((TODAY - m.day).days, m.state) for m in marks]) for l, r, marks in store.repeat_history()]
+    assert history == [
+        ("Inbox", "daily", [(0, "success"), (1, "success"), (2, None), (3, "failure"), (4, "failure")]),
+        ("Work", "w", [(0, None), (1, "failure"), (2, "failure"), (3, "failure"), (4, "failure")]),
+    ]
+
+
+def test_repeat_history_marks_days_due_but_never_spawned_missed_from_the_first_todo_on(store, todo_list):
+    every_other = store.add_repeat(todo_list.id, "every other day", interval=2)  # today's spawned
+    every_other.start = TODAY - timedelta(days=10)  # due on even days ago; none spawned before 6
+    store._save(every_other)
+    for days_ago in (6, 2):
+        [todo] = store.spawn(TODAY - timedelta(days=days_ago))
+        todo.created_at = todo.scheduled_at  # as when spawned on its day
+        store._save(todo)
+    store.update_todo(todo.id, done=True)  # 2 days ago
+    never = store.add_repeat(todo_list.id, "never spawned", "weekdays", weekdays=[TOMORROW.weekday()])
+    history = {r.text: [((TODAY - m.day).days, m.state) for m in marks] for _, r, marks in store.repeat_history()}
+    assert history == {"every other day": [(0, None), (2, "success"), (4, "failure"), (6, "failure")], never.text: []}
+    store.delete_todo(next(t for t in store.todos(todo_list.id) if not t.done).id)  # today's, given up
+    assert store.repeat_history()[0][2][0] == (TODAY, "failure")
+
+
+def test_spawned_for_falls_back_to_the_todos_date():
+    todo = Todo(list_id=uuid4(), repeat_id=uuid4(), position="a", created_at=TODAY, scheduled_at=TOMORROW)
+    assert store_module.spawned_for(todo) == TOMORROW
+
+
 # Several processes on one database, each with its own store
 
 

@@ -3,6 +3,15 @@
 Versions follow [semantic versioning](https://semver.org), as kept in `CLAUDE.md`: a new
 data schema or sync protocol is a minor version while kanso is 0.x.
 
+## 0.3.3
+
+- Repeating todo statistics: `s` on the todos or the repeats shows every list's repeating
+  todos in the same grid as the habits': a day is ✓ once its todo is done, ✗ if it was
+  deleted, wasn't done by its date, or was never added on a day it was due (as when no
+  device ran then; from its first todo on), and · while it's still to do.
+  Each one's streak and rate are shown too; a todo done today counts toward its streak.
+  The help's stats page now covers both.
+
 ## 0.3.2
 
 - Habit statistics: `s` on the habit days or the habits shows every list's habits as a

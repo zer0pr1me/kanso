@@ -6,9 +6,9 @@ from itertools import groupby
 
 from textual.content import Content
 
-from kanso.core.models import Habit, HabitDay, Scheduled, Todo, TodoList
+from kanso.core.models import HabitDay, Scheduled, Todo, TodoList
 from kanso.core.order import human_date
-from kanso.core.stats import streak, success_rate
+from kanso.core.stats import Marked, streak, success_rate
 
 LABEL_STYLE = "bold $text-accent on $accent-muted"
 RULE_STYLE = "$text-secondary on $secondary-muted"
@@ -67,13 +67,26 @@ GRID_MARKS[None] = ("· ", "dim")
 """A day's mark in the grid, by its state: a dot while unchecked; days not due are blank."""
 
 
-def habit_grid(history: list[tuple[TodoList, Habit, list[HabitDay]]], today: date, width: int, back: int = 0) -> Content:
-    """`Store.habit_history` as a grid of whole weeks, Monday to Sunday, `back` weeks before
-    this one's, as many as fit in `width`: a column per day, a row per habit under its list's
-    name, then its streak and its success rate over the days shown; a legend last."""
+HABIT_NAMES = {"success": "success", "failure": "failure", None: "unchecked"}
+REPEAT_NAMES = {"success": "done", "failure": "missed", None: "to do"}
+"""What the grid's marks mean, by state, for habits and for repeating todos."""
+
+
+def stats_grid(
+    history: list[tuple[TodoList, Scheduled, list[Marked]]],
+    today: date,
+    width: int,
+    back: int = 0,
+    names: dict[str | None, str] = HABIT_NAMES,
+    empty: str = "No habits yet",
+) -> Content:
+    """`Store.habit_history` or `Store.repeat_history` as a grid of whole weeks, Monday to
+    Sunday, `back` weeks before this one's, as many as fit in `width`: a column per day, a row
+    per template under its list's name, then its streak and its success rate over the days
+    shown; a legend last, with the marks' `names`. Says `empty` if there are no templates."""
     if not history:
-        return Content.styled("No habits yet", "dim italic")
-    name_width = 3 + min(NAME_WIDTH, max(len(habit.text) for _, habit, _ in history))
+        return Content.styled(empty, "dim italic")
+    name_width = 3 + min(NAME_WIDTH, max(len(template.text) for _, template, _ in history))
     weeks = max(1, (width - name_width - len(STATS.format("", ""))) // WEEK_WIDTH)
     end = today + timedelta(days=6 - today.weekday(), weeks=-back)
     columns = [end - timedelta(days=n) for n in range(7 * weeks - 1, -1, -1)]
@@ -83,15 +96,15 @@ def habit_grid(history: list[tuple[TodoList, Habit, list[HabitDay]]], today: dat
         Content(pad + "".join(f"{d:%b} {d.day}".ljust(WEEK_WIDTH) for d in columns[::7]).rstrip()),
         Content.assemble(pad, *letters, STATS.format("Streak", "Rate")),
     ]
-    for todo_list, habits in groupby(history, lambda entry: entry[0]):
+    for todo_list, templates in groupby(history, lambda entry: entry[0]):
         lines.append(Content.styled(fit(todo_list.name, width), ACCENT_STYLE))
-        for _, habit, days in habits:
+        for _, template, days in templates:
             by_day = {d.day: d for d in days}
             shown = [by_day[d] for d in columns if d in by_day]
             rate = success_rate(shown)
             stats = STATS.format(streak(days, today), "—" if rate is None else f"{rate:.0%}")
-            name = f"  {fit(habit.text, name_width - 3)}".ljust(name_width)
+            name = f"  {fit(template.text, name_width - 3)}".ljust(name_width)
             lines.append(Content.assemble(name, *(GRID_MARKS[by_day[d].state] if d in by_day else "  " for d in columns), stats))
-    legend = (Content.assemble(mark, (state or "unchecked", "dim")) for state, mark in GRID_MARKS.items())
+    legend = (Content.assemble(mark, (names[state], "dim")) for state, mark in GRID_MARKS.items())
     lines += [Content(""), Content("   ").join(legend)]
     return Content("\n").join(lines)

@@ -12,7 +12,7 @@ from kanso.core.models import Scheduled
 from kanso.node import NodeView
 from kanso.tui.dialogs import ConnectDialog, HelpDialog
 from kanso.tui.panes import HELP_PANES, HabitDaysPane, HabitsPane, ListContentsPane, ListsPane, RepeatsPane, TodosPane, key_rows
-from kanso.tui.stats import HabitStats
+from kanso.tui.stats import HabitStats, RepeatStats
 
 
 class KansoApp(App):
@@ -98,6 +98,9 @@ class KansoApp(App):
 
     def action_habit_stats(self):
         self.push_screen(HabitStats(self.node))
+
+    def action_repeat_stats(self):
+        self.push_screen(RepeatStats(self.node))
 
     def key_display(self, binding: Binding) -> str:
         """The keys of `binding`, each as the footer shows it, joined by `/`."""

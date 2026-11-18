@@ -19,7 +19,7 @@ from kanso.core.order import done_before, sections
 from kanso.core.store import NAME_MAX, NotFound, Store
 from kanso.tui.dialogs import ConfirmDialog, RepeatDialog, TextPrompt
 from kanso.tui.format import habit_day_label, human_date, section_title, template_label, todo_label
-from kanso.tui.stats import HabitStats
+from kanso.tui.stats import Stats
 from kanso.tui.widgets import LabelSuggester, SectionedOptionList, SectionTitle, VimOptionList, layout_alias, with_layouts
 
 
@@ -36,7 +36,8 @@ MOVE_BINDINGS = [
 ]
 TOP_TOGGLE = ("r", "app.toggle_templates", "Todos/Repeats")
 BOTTOM_TOGGLE = ("r", "app.toggle_templates", "Days/Habits")
-STATS = ("s", "app.habit_stats", "Stats")
+HABIT_STATS = ("s", "app.habit_stats", "Stats")
+REPEAT_STATS = ("s", "app.repeat_stats", "Stats")
 
 
 class RecordPane[T: Record](VimOptionList):
@@ -198,7 +199,8 @@ SHOW_OLD_DONE = "show_old_done"
 
 class TodosPane(ListContentsPane[Todo], SectionedOptionList):
     """Todos under a title per scheduled date; titles are disabled, so the cursor skips them.
-    Todos done before today are hidden unless `f` shows them; `records` keeps them all."""
+    Todos done before today are hidden unless `f` shows them; `records` keeps them all. `s`,
+    here and on the repeats, shows every list's repeating todos' statistics."""
 
     BINDINGS = with_layouts([
         TOP_TOGGLE,
@@ -212,6 +214,7 @@ class TodosPane(ListContentsPane[Todo], SectionedOptionList):
         Binding("comma", "shift(-1)", "-1 day", key_display=","),
         *MOVE_BINDINGS,
         ("f", "toggle_old_done", "Old done"),
+        REPEAT_STATS,
     ])
 
     def fetch(self, list_id: UUID) -> list[Todo]:
@@ -345,7 +348,7 @@ class TemplatesPane[T: Scheduled](ListContentsPane[T]):
 
 
 class RepeatsPane(TemplatesPane[Repeat]):
-    BINDINGS = with_layouts([TOP_TOGGLE, *TEMPLATE_BINDINGS])
+    BINDINGS = with_layouts([TOP_TOGGLE, *TEMPLATE_BINDINGS, REPEAT_STATS])
     placeholder = "Repeating todo"
 
     def fetch(self, list_id: UUID) -> list[Repeat]:
@@ -368,7 +371,7 @@ class RepeatsPane(TemplatesPane[Repeat]):
 
 
 class HabitsPane(TemplatesPane[Habit]):
-    BINDINGS = with_layouts([BOTTOM_TOGGLE, *TEMPLATE_BINDINGS, STATS])
+    BINDINGS = with_layouts([BOTTOM_TOGGLE, *TEMPLATE_BINDINGS, HABIT_STATS])
     placeholder = "Habit"
 
     def fetch(self, list_id: UUID) -> list[Habit]:
@@ -408,7 +411,7 @@ class HabitDaysPane(ListContentsPane[HabitDay], SectionedOptionList):
         ("e", "edit", "Edit habit"),
         ("d", "delete", "Delete"),
         ("f", "toggle_old", "Older days"),
-        STATS,
+        HABIT_STATS,
     ])
 
     def fetch(self, list_id: UUID) -> list[HabitDay]:
@@ -468,7 +471,7 @@ class HabitDaysPane(ListContentsPane[HabitDay], SectionedOptionList):
             self.delete(habit_day, question, self.store.delete_habit_day)
 
 
-def key_rows(pane: type[RecordPane | HabitStats], display: Callable[[Binding], str]) -> list[tuple[str, str]]:
+def key_rows(pane: type[RecordPane | Stats], display: Callable[[Binding], str]) -> list[tuple[str, str]]:
     """What `pane`'s keys do, as (keys, description) rows: its own bindings and its bases' (but
     not Textual's), without the Ukrainian layout's copies; a key bound again by a subclass
     keeps the subclass's. `display` formats a binding's keys."""
@@ -487,6 +490,6 @@ HELP_PANES = {
     "Repeats": RepeatsPane,
     "Habit days": HabitDaysPane,
     "Habits": HabitsPane,
-    "Habit stats": HabitStats,
+    "Stats": Stats,
 }
 """The panes (and screens) the help describes, by title: a page each."""

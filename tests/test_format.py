@@ -13,7 +13,7 @@ from kanso.tui.format import (
     RULE_STYLE,
     describe_rule,
     habit_day_label,
-    habit_grid,
+    stats_grid,
     human_date,
     section_title,
     template_label,
@@ -189,8 +189,8 @@ def history():
     ]
 
 
-def test_habit_grid_shows_whole_weeks_up_to_this_one_with_streaks_and_rates(history):
-    grid = habit_grid(history, WEDNESDAY, 3 + 24 + 2 * 14 + 14 + 13)  # 2 weeks fit, not 3
+def test_stats_grid_shows_whole_weeks_up_to_this_one_with_streaks_and_rates(history):
+    grid = stats_grid(history, WEDNESDAY, 3 + 24 + 2 * 14 + 14 + 13)  # 2 weeks fit, not 3
     assert grid.plain.split("\n") == [
         " " * 27 + "Oct 12        Oct 19",
         " " * 27 + "M T W T F S S M T W T F S S   Streak  Rate",
@@ -204,8 +204,8 @@ def test_habit_grid_shows_whole_weeks_up_to_this_one_with_streaks_and_rates(hist
     ]
 
 
-def test_habit_grid_styles_marks_and_today(history):
-    grid = habit_grid(history, WEDNESDAY, 80)
+def test_stats_grid_styles_marks_and_today(history):
+    grid = stats_grid(history, WEDNESDAY, 80)
     lines = grid.split("\n")
     styles = {line.plain[span.start : span.end]: str(span.style) for line in lines for span in line.spans}
     assert styles["✓ "] == HABIT_MARKS["success"][1] and styles["✗ "] == HABIT_MARKS["failure"][1]
@@ -213,13 +213,13 @@ def test_habit_grid_styles_marks_and_today(history):
     assert styles["Inbox"] == styles["Work"] == "bold $text-accent"
 
 
-def test_habit_grid_pages_back_by_weeks(history):
-    grid = habit_grid(history, WEDNESDAY, 3 + 24 + 14 + 14, back=1)
+def test_stats_grid_pages_back_by_weeks(history):
+    grid = stats_grid(history, WEDNESDAY, 3 + 24 + 14 + 14, back=1)
     lines = grid.plain.split("\n")
     assert lines[0].strip() == "Oct 12"
     assert lines[3] == "  Read".ljust(27) + "✓ " + "  " * 5 + "✗ " + "       2   50%"  # the rate of the days shown
 
 
-def test_habit_grid_has_at_least_a_week_and_says_when_there_are_no_habits(history):
-    assert habit_grid(history, WEDNESDAY, 10).plain.split("\n")[0].strip() == "Oct 19"
-    assert habit_grid([], WEDNESDAY, 80).plain == "No habits yet"
+def test_stats_grid_has_at_least_a_week_and_says_when_there_are_no_habits(history):
+    assert stats_grid(history, WEDNESDAY, 10).plain.split("\n")[0].strip() == "Oct 19"
+    assert stats_grid([], WEDNESDAY, 80).plain == "No habits yet"

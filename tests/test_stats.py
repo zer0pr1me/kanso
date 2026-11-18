@@ -4,7 +4,7 @@ from uuid import uuid4
 import pytest
 
 from kanso.core.models import HabitDay
-from kanso.core.stats import streak, success_rate
+from kanso.core.stats import Mark, streak, success_rate
 
 TODAY = date(2026, 11, 17)
 
@@ -36,9 +36,15 @@ def test_streak(states, expected):
     assert streak(days(*states), TODAY) == expected
 
 
-def test_streak_ignores_order_and_days_from_today_on():
-    marked = days("success", "success", "success", "failure", until=TODAY + timedelta(days=1))  # today, tomorrow
+def test_streak_ignores_order_and_days_after_today():
+    marked = days("failure", "success", "success", "failure", until=TODAY + timedelta(days=1))  # today, tomorrow
     assert streak(list(reversed(marked)), TODAY) == 2
+
+
+def test_streak_counts_today_once_marked_as_a_repeating_todo_done_today():
+    todo = [Mark(TODAY - timedelta(days=1), "success"), Mark(TODAY, "success")]
+    assert streak(todo, TODAY) == 2 and streak([Mark(TODAY, None), *todo[:1]], TODAY) == 1
+    assert success_rate([Mark(TODAY, "failure"), *todo]) == 2 / 3
 
 
 @pytest.mark.parametrize(
